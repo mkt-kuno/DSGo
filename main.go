@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"math"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -12,18 +14,60 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+const (
+	int16Max     = 32767
+	numRawCh     = 16
+	numPhyCh     = 16
+	mockInterval = 50 * time.Millisecond
+)
+
+var (
+	rawThreshWarn  = int16(math.Floor(float64(int16Max) * 0.80)) // 80% of INT16_MAX
+	rawThreshAlert = int16(math.Floor(float64(int16Max) * 0.95)) // 95% of INT16_MAX
+)
+
+var (
+	colorWhite  = color.NRGBA{255, 255, 255, 255}
+	colorYellow = color.NRGBA{255, 255, 0, 255}
+	colorRed    = color.NRGBA{255, 60, 60, 255}
+)
+
+// rawValueColor returns the display color based on the absolute value of a raw int16.
+func rawValueColor(v int16) color.Color {
+	a := v
+	if a < 0 {
+		if a == math.MinInt16 {
+			return colorRed
+		}
+		a = -a
+	}
+	switch {
+	case a >= rawThreshAlert:
+		return colorRed
+	case a >= rawThreshWarn:
+		return colorYellow
+	default:
+		return colorWhite
+	}
+}
+
 type channelDef struct {
 	Index int
 	Name  string
 	Value string
 }
 
-func makeCell(ch channelDef) fyne.CanvasObject {
+// channelCell holds references to updatable UI elements for one channel.
+type channelCell struct {
+	valueText *canvas.Text
+}
+
+func makeCell(ch channelDef) (fyne.CanvasObject, *channelCell) {
 	label := canvas.NewText(fmt.Sprintf("%02d:%s", ch.Index, ch.Name), color.White)
-	label.TextSize = 11
+	label.TextSize = 16
 
 	value := canvas.NewText(ch.Value, color.White)
-	value.TextSize = 24
+	value.TextSize = 28
 	value.Alignment = fyne.TextAlignTrailing
 	value.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -34,22 +78,24 @@ func makeCell(ch channelDef) fyne.CanvasObject {
 
 	valueBox := container.NewStack(bg, container.NewPadded(value))
 
-	return container.NewBorder(label, nil, nil, nil, valueBox)
+	obj := container.NewBorder(label, nil, nil, nil, valueBox)
+	return obj, &channelCell{valueText: value}
 }
 
-func makeSection(title string, channels []channelDef) fyne.CanvasObject {
+func makeSection(title string, channels []channelDef) (fyne.CanvasObject, []*channelCell) {
 	titleText := canvas.NewText(title, color.White)
 	titleText.TextSize = 13
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
 
 	cells := make([]fyne.CanvasObject, len(channels))
+	refs := make([]*channelCell, len(channels))
 	for i, ch := range channels {
-		cells[i] = makeCell(ch)
+		cells[i], refs[i] = makeCell(ch)
 	}
 	grid := container.NewGridWithColumns(8, cells...)
 	sep := canvas.NewRectangle(color.White)
 	sep.SetMinSize(fyne.NewSize(0, 1))
-	return container.NewVBox(titleText, sep, grid)
+	return container.NewVBox(titleText, sep, grid), refs
 }
 
 func rawValueChannels() []channelDef {
@@ -149,10 +195,10 @@ func main() {
 	w.SetMainMenu(mainMenu)
 
 	// Build display sections.
-	rawSection := makeSection("Raw Value (int16_t: -32768 to +32767)", rawValueChannels())
-	physSection := makeSection("Physical Value", physicalValueChannels())
-	paramSection := makeSection("Parameter", parameterChannels())
-	voltSection := makeSection("Voltage Out", voltageOutChannels())
+	rawSection, rawCells := makeSection("Raw Value (int16_t: -32768 to +32767)", rawValueChannels())
+	physSection, phyCells := makeSection("Physical Value", physicalValueChannels())
+	paramSection, _ := makeSection("Parameter", parameterChannels())
+	voltSection, _ := makeSection("Voltage Out", voltageOutChannels())
 
 	sections := container.New(layout.NewVBoxLayout(),
 		rawSection, physSection, paramSection, voltSection, status,
@@ -161,5 +207,27 @@ func main() {
 	scrollable := container.NewVScroll(content)
 
 	w.SetContent(scrollable)
+
+	// Mock AD/DA: each channel gets a sine wave with a different phase offset.
+	mock := NewMockADDA(numRawCh)
+	go func() {
+		for {
+			time.Sleep(mockInterval)
+			samples := mock.Next(0.05)
+			for ch, s := range samples {
+				// Update Raw
+				rawCells[ch].valueText.Text = fmt.Sprintf("%d", s.Raw)
+				rawCells[ch].valueText.Color = rawValueColor(s.Raw)
+				rawCells[ch].valueText.Refresh()
+
+				// Update Physical (same channels)
+				if ch < numPhyCh {
+					phyCells[ch].valueText.Text = fmt.Sprintf("%.4f", s.Phy)
+					phyCells[ch].valueText.Refresh()
+				}
+			}
+		}
+	}()
+
 	w.ShowAndRun()
 }
