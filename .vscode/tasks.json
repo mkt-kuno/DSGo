@@ -1,0 +1,104 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "go: build (exe)",
+      "type": "shell",
+      "command": "go",
+      "args": [
+        "build",
+        "-o",
+        "dsg.exe",
+        "."
+      ],
+      "options": {
+        "env": {
+          "CGO_ENABLED": "1"
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$go"
+    },
+    {
+      "label": "go: build (exe - No Console Window)",
+      "type": "shell",
+      "command": "go",
+      "args": [
+        "build",
+        "-ldflags=-H=windowsgui",
+        "-o",
+        "dsg.exe",
+        "."
+      ],
+      "options": {
+        "env": {
+          "CGO_ENABLED": "1"
+        }
+      },
+      "group": "build",
+      "problemMatcher": "$go"
+    },
+    {
+      "label": "go: run",
+      "type": "shell",
+      "command": "go",
+      "args": [
+        "run",
+        "."
+      ],
+      "options": {
+        "env": {
+          "CGO_ENABLED": "1"
+        }
+      },
+      "group": "test",
+      "problemMatcher": "$go"
+    },
+    {
+      "label": "go: test",
+      "type": "shell",
+      "command": "go",
+      "args": [
+        "test",
+        "./..."
+      ],
+      "options": {
+        "env": {
+          "CGO_ENABLED": "1"
+        }
+      },
+      "group": "test",
+      "problemMatcher": "$go"
+    },
+    {
+      "label": "fyne: package (Windows)",
+      "type": "shell",
+      "command": "fyne",
+      "args": [
+        "package",
+        "-os",
+        "windows",
+        "-name",
+        "dsg"
+      ],
+      "options": {
+        "env": {
+          "CGO_ENABLED": "1"
+        }
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "run: dsg.exe",
+      "type": "shell",
+      "command": ".\\dsg.exe",
+      "dependsOn": "go: build (exe)",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

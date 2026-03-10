@@ -1,0 +1,43 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug (Fyne GUI)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}",
+      "env": {
+        "CGO_ENABLED": "1"
+      },
+      "args": [],
+      "buildFlags": "",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug (Fyne GUI - No Console Window)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}",
+      "env": {
+        "CGO_ENABLED": "1"
+      },
+      "args": [],
+      "buildFlags": "-ldflags=-H=windowsgui",
+      "console": "internalConsole"
+    },
+    {
+      "name": "Run (go run)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "env": {
+        "CGO_ENABLED": "1"
+      },
+      "args": [],
+      "console": "integratedTerminal"
+    }
+  ]
+}

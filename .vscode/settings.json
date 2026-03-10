@@ -1,0 +1,36 @@
+{
+  "go.toolsEnvVars": {
+    "CGO_ENABLED": "1"
+  },
+  "go.buildEnvVars": {
+    "CGO_ENABLED": "1"
+  },
+  "go.testEnvVars": {
+    "CGO_ENABLED": "1"
+  },
+  "go.lintEnvVars": {
+    "CGO_ENABLED": "1"
+  },
+  "go.buildFlags": [],
+  "go.vetFlags": [],
+  "go.lintTool": "golangci-lint",
+  "go.lintOnSave": "package",
+  "go.buildOnSave": "package",
+  "go.useLanguageServer": true,
+  "gopls": {
+    "ui.semanticTokens": true,
+    "build.env": {
+      "CGO_ENABLED": "1"
+    }
+  },
+  "files.exclude": {
+    "**/.git": true
+  },
+  "editor.formatOnSave": true,
+  "[go]": {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  }
+}
