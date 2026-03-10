@@ -24,22 +24,27 @@ func main() {
 	}
 
 	// Build menus.
-	aiMenu := fyne.NewMenu("AI Calibration")
-	aoMenu := fyne.NewMenu("AO Voltage Test")
-	speMenu := fyne.NewMenu("Specimen Config")
-	ctlMenu := fyne.NewMenu("Control",
-		menuAction("PreConsolidation"),
-		menuAction("Step Control"),
-	)
-	otherMenu := fyne.NewMenu("Other",
+	appMenu := fyne.NewMenu("App",
 		menuAction("Version"),
 		menuAction("Env Variables"),
 		menuAction("WebServer Info"),
 		menuAction("Open Log Folder"),
 		menuAction("Open Temp Folder"),
 	)
+	aioMenu := fyne.NewMenu("AI/AO", 
+		menuAction("AI Calibration"),
+		menuAction("AO VoltageOut"),
+	)
+	speMenu := fyne.NewMenu("Specimen", 
+		menuAction("Config"),
+	)
+	ctlMenu := fyne.NewMenu("Control",
+		menuAction("PreConsolidation"),
+		menuAction("StepControl"),
+	)
 
-	w.SetMainMenu(fyne.NewMainMenu(aiMenu, aoMenu, speMenu, ctlMenu, otherMenu))
+	mainMenu := fyne.NewMainMenu(appMenu, aioMenu, speMenu, ctlMenu)
+	w.SetMainMenu(mainMenu)
 	w.SetContent(container.NewCenter(status))
 	w.ShowAndRun()
 }
