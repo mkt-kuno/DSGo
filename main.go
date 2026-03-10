@@ -51,6 +51,19 @@ func rawValueColor(v int16) color.Color {
 	}
 }
 
+// phyValueColor returns the display color for a physical/parameter float64 value.
+// NaN → red, Inf → yellow, otherwise white.
+func phyValueColor(v float64) color.Color {
+	switch {
+	case math.IsNaN(v):
+		return colorRed
+	case math.IsInf(v, 0):
+		return colorYellow
+	default:
+		return colorWhite
+	}
+}
+
 type channelDef struct {
 	Index int
 	Name  string
@@ -65,26 +78,27 @@ type channelCell struct {
 func makeCell(ch channelDef) (fyne.CanvasObject, *channelCell) {
 	label := canvas.NewText(fmt.Sprintf("%02d:%s", ch.Index, ch.Name), color.White)
 	label.TextSize = 16
+	label.TextStyle = fyne.TextStyle{Monospace: true}
 
 	value := canvas.NewText(ch.Value, color.White)
-	value.TextSize = 28
+	value.TextSize = 32
 	value.Alignment = fyne.TextAlignTrailing
-	value.TextStyle = fyne.TextStyle{Bold: true}
+	value.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
 	bg := canvas.NewRectangle(color.NRGBA{255, 255, 255, 0})
-	bg.CornerRadius = 6
+	bg.CornerRadius = 4
 	bg.StrokeColor = color.NRGBA{255, 255, 255, 128}
-	bg.StrokeWidth = 1.5
+	bg.StrokeWidth = 1
 
-	valueBox := container.NewStack(bg, container.NewPadded(value))
+	valueBox := container.NewStack(bg, value)
 
-	obj := container.NewBorder(label, nil, nil, nil, valueBox)
+	obj := container.NewVBox(label, valueBox)
 	return obj, &channelCell{valueText: value}
 }
 
 func makeSection(title string, channels []channelDef) (fyne.CanvasObject, []*channelCell) {
 	titleText := canvas.NewText(title, color.White)
-	titleText.TextSize = 13
+	titleText.TextSize = 16
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
 
 	cells := make([]fyne.CanvasObject, len(channels))
@@ -223,6 +237,7 @@ func main() {
 				// Update Physical (same channels)
 				if ch < numPhyCh {
 					phyCells[ch].valueText.Text = fmt.Sprintf("%.4f", s.Phy)
+					phyCells[ch].valueText.Color = phyValueColor(s.Phy)
 					phyCells[ch].valueText.Refresh()
 				}
 			}
