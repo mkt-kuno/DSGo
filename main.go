@@ -11,6 +11,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -171,8 +172,132 @@ func voltageOutChannels() []channelDef {
 	}
 }
 
+// makePlotArea creates a single plot area with axis selectors and a placeholder canvas.
+func makePlotArea() fyne.CanvasObject {
+	// Axis options (Y-axis uses channel indices as options)
+	yOptions := make([]string, numPhyCh)
+	for i := 0; i < numPhyCh; i++ {
+		yOptions[i] = fmt.Sprintf("%02d", i)
+	}
+	xAxisSel := widget.NewSelect([]string{"time", "00", "01", "02", "03"}, nil)
+	xAxisSel.SetSelected("time")
+	yAxisSel := widget.NewSelect(yOptions, nil)
+	yAxisSel.SetSelected("00")
+	targetSel := widget.NewSelect([]string{"---", "Target1", "Target2"}, nil)
+	targetSel.SetSelected("---")
+	selectWidth := float32(75)
+	selectHeight := float32(30)
+
+	xLabel := canvas.NewText("X-axis", colorWhite)
+	xLabel.TextSize = 12
+	yLabel := canvas.NewText("Y-axis", colorWhite)
+	yLabel.TextSize = 12
+	targetLabel := canvas.NewText("Target", colorWhite)
+	targetLabel.TextSize = 12
+
+	selectors := container.NewVBox(
+		xLabel, container.NewGridWrap(fyne.NewSize(selectWidth, selectHeight), xAxisSel),
+		yLabel, container.NewGridWrap(fyne.NewSize(selectWidth, selectHeight), yAxisSel),
+		targetLabel, container.NewGridWrap(fyne.NewSize(selectWidth, selectHeight), targetSel),
+	)
+
+	// Plot placeholder
+	plotBg := canvas.NewRectangle(color.NRGBA{30, 30, 30, 255})
+	plotBg.SetMinSize(fyne.NewSize(250, 150))
+
+	plotArea := container.NewBorder(nil, nil, nil, nil, plotBg)
+
+	return container.NewBorder(nil, nil, selectors, nil, plotArea)
+}
+
+// makeLogArea creates the log display area.
+func makeLogArea(logText *widget.RichText) fyne.CanvasObject {
+	bg := canvas.NewRectangle(color.NRGBA{20, 20, 60, 255})
+	bg.SetMinSize(fyne.NewSize(170, 150))
+	scrollLog := container.NewVScroll(logText)
+	scrollLog.SetMinSize(fyne.NewSize(170, 150))
+	logPanel := container.NewStack(bg, scrollLog)
+	return container.NewGridWrap(fyne.NewSize(170, 150), logPanel)
+}
+
+// makeControlStateArea creates the control mode display.
+func makeControlStateArea(modeText *canvas.Text) fyne.CanvasObject {
+	bg := canvas.NewRectangle(color.NRGBA{30, 30, 30, 255})
+	bg.SetMinSize(fyne.NewSize(200, 50))
+	modeLabel := canvas.NewText("Mode:", colorWhite)
+	modeLabel.TextSize = 14
+	row := container.NewHBox(modeLabel, modeText)
+	return container.NewStack(bg, container.NewPadded(row))
+}
+
+// makeSaveArea creates the data save display with filename entry and elapsed seconds.
+func makeSaveArea(filenameEntry *widget.Entry, elapsedLabel *canvas.Text) fyne.CanvasObject {
+	saveLabel := canvas.NewText("Save:", colorWhite)
+	saveLabel.TextSize = 14
+	fileLabel := canvas.NewText("Filename", colorWhite)
+	fileLabel.TextSize = 14
+	secLabel := canvas.NewText("[sec]", colorWhite)
+	secLabel.TextSize = 14
+	filenameBox := container.NewGridWrap(fyne.NewSize(150, 30), filenameEntry)
+
+	row := container.NewHBox(
+		saveLabel, fileLabel, filenameBox,
+		elapsedLabel, secLabel,
+	)
+	return row
+}
+
+// makeCurrentSettings creates the read-only current settings display.
+func makeCurrentSettings(ctrlTypeLabel, sampTimeLabel *canvas.Text) fyne.CanvasObject {
+	title := canvas.NewText("Current Settings", colorWhite)
+	title.TextSize = 14
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	ctLabel := canvas.NewText("ControlType", colorWhite)
+	ctLabel.TextSize = 12
+	stLabel := canvas.NewText("SamplingTime", colorWhite)
+	stLabel.TextSize = 12
+
+	ctrlTypeBg := canvas.NewRectangle(color.NRGBA{40, 40, 40, 255})
+	ctrlTypeBox := container.NewStack(ctrlTypeBg, ctrlTypeLabel)
+	sampTimeBg := canvas.NewRectangle(color.NRGBA{40, 40, 40, 255})
+	sampTimeBox := container.NewStack(sampTimeBg, sampTimeLabel)
+
+	row1 := container.NewHBox(ctLabel, ctrlTypeBox)
+	row2 := container.NewHBox(stLabel, sampTimeBox)
+
+	sep := canvas.NewRectangle(colorWhite)
+	sep.SetMinSize(fyne.NewSize(0, 1))
+	return container.NewVBox(title, sep, row1, row2)
+}
+
+// makeBasicSettings creates the control settings area with dropdowns and Apply buttons.
+func makeBasicSettings(
+	ctrlTypeSel *widget.Select,
+	sampTimeSel *widget.Select,
+	ctrlApplyBtn *widget.Button,
+	sampApplyBtn *widget.Button,
+) fyne.CanvasObject {
+	title := canvas.NewText("Basic Settings", colorWhite)
+	title.TextSize = 14
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	ctLabel := canvas.NewText("ControlType", colorWhite)
+	ctLabel.TextSize = 12
+	stLabel := canvas.NewText("SamplingTime", colorWhite)
+	stLabel.TextSize = 12
+
+	sep := canvas.NewRectangle(colorWhite)
+	sep.SetMinSize(fyne.NewSize(0, 1))
+
+	row1 := container.NewHBox(ctLabel, ctrlTypeSel, ctrlApplyBtn)
+	row2 := container.NewHBox(stLabel, sampTimeSel, sampApplyBtn)
+	return container.NewVBox(title, sep, row1, row2)
+}
+
 func main() {
 	a := app.New()
+	a.Settings().SetTheme(theme.DarkTheme())
 	w := a.NewWindow("DigitShowGo")
 	w.Resize(fyne.NewSize(1400, 800))
 
@@ -214,8 +339,112 @@ func main() {
 	paramSection, _ := makeSection("Parameter", parameterChannels())
 	voltSection, _ := makeSection("Voltage Out", voltageOutChannels())
 
+	// --- Bottom area ---
+
+	// Plot areas (2 plots side by side)
+	plotTitle := canvas.NewText("Plot", colorWhite)
+	plotTitle.TextSize = 16
+	plotTitle.TextStyle = fyne.TextStyle{Bold: true}
+	plotSep := canvas.NewRectangle(colorWhite)
+	plotSep.SetMinSize(fyne.NewSize(0, 1))
+	plot1 := makePlotArea()
+	plot2 := makePlotArea()
+	plotRow := container.NewGridWithColumns(2, plot1, plot2)
+	plotSection := container.NewVBox(plotTitle, plotSep, plotRow)
+
+	// Log display area
+	nowStr := time.Now().Format("2006-01-02 15:04:05.000")
+	logText := widget.NewRichTextFromMarkdown(
+		fmt.Sprintf("[%s] [default] [info] config.yaml is not found.\n[%s] [default] [error] modbus_connect failed port:\\\\.\\COM9 slave:1", nowStr, nowStr),
+	)
+	logArea := makeLogArea(logText)
+
+	// Control state display
+	modeText := canvas.NewText("None", colorWhite)
+	modeText.TextSize = 14
+	controlStateArea := makeControlStateArea(modeText)
+
+	// Data save area
+	filenameEntry := widget.NewEntry()
+	filenameEntry.SetPlaceHolder("")
+	elapsedLabel := canvas.NewText("0", colorWhite)
+	elapsedLabel.TextSize = 14
+	saveArea := makeSaveArea(filenameEntry, elapsedLabel)
+
+	// Current Settings display
+	curCtrlType := canvas.NewText("00:None", colorWhite)
+	curCtrlType.TextSize = 14
+	curSampTime := canvas.NewText("1", colorWhite)
+	curSampTime.TextSize = 14
+	currentSettings := makeCurrentSettings(curCtrlType, curSampTime)
+
+	// Basic Settings with controls
+	ctrlTypeSel := widget.NewSelect([]string{"None", "Stress", "Strain", "Volume"}, nil)
+	ctrlTypeSel.SetSelected("None")
+	sampTimeSel := widget.NewSelect([]string{"1 sec", "2 sec", "5 sec", "10 sec"}, nil)
+	sampTimeSel.SetSelected("1 sec")
+
+	ctrlApplyBtn := widget.NewButton("Apply", func() {
+		curCtrlType.Text = ctrlTypeSel.Selected
+		curCtrlType.Refresh()
+		status.SetText("Applied ControlType: " + ctrlTypeSel.Selected)
+	})
+	sampApplyBtn := widget.NewButton("Apply", func() {
+		curSampTime.Text = sampTimeSel.Selected
+		curSampTime.Refresh()
+		status.SetText("Applied SamplingTime: " + sampTimeSel.Selected)
+	})
+	basicSettings := makeBasicSettings(ctrlTypeSel, sampTimeSel, ctrlApplyBtn, sampApplyBtn)
+
+	// 4 Buttons
+	startControlBtn := widget.NewButton("Start Control", func() {
+		modeText.Text = ctrlTypeSel.Selected
+		modeText.Refresh()
+		status.SetText("Control started: " + ctrlTypeSel.Selected)
+	})
+	stopControlBtn := widget.NewButton("Stop Control", func() {
+		modeText.Text = "None"
+		modeText.Refresh()
+		status.SetText("Control stopped")
+	})
+	startSavingBtn := widget.NewButton("Start Saving", func() {
+		status.SetText("Saving started: " + filenameEntry.Text)
+	})
+	stopSavingBtn := widget.NewButton("Stop Saving", func() {
+		status.SetText("Saving stopped")
+	})
+
+	// Layout: control buttons in 2x2 grid
+	buttonGrid := container.NewGridWithColumns(2,
+		startControlBtn, stopControlBtn,
+		startSavingBtn, stopSavingBtn,
+	)
+
+	// Right column: Current Settings + Basic Settings + Buttons
+	rightCol := container.NewVBox(
+		currentSettings,
+		basicSettings,
+		buttonGrid,
+	)
+
+	// Middle-bottom area: log + control state stacked
+	midBottomCol := container.NewVBox(
+		logArea,
+		controlStateArea,
+		saveArea,
+	)
+
+	// Bottom row: plots | log+state | settings+buttons
+	bottomRow := container.NewHBox(
+		plotSection,
+		midBottomCol,
+		rightCol,
+	)
+
 	sections := container.New(layout.NewVBoxLayout(),
-		rawSection, physSection, paramSection, voltSection, status,
+		rawSection, physSection, paramSection, voltSection,
+		bottomRow,
+		status,
 	)
 	content := container.NewPadded(sections)
 	scrollable := container.NewVScroll(content)
