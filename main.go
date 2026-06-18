@@ -918,8 +918,6 @@ func consumeReconnect() bool {
 func onStartControl() {
 	appData.mu.Lock()
 	appData.controlOn = true
-	// Format control type to "00:None" style
-	appData.controlType = appData.controlType
 	appData.mu.Unlock()
 	appendLog("[control] Start requested. ControlType=" + appData.controlType)
 }

@@ -155,11 +155,6 @@ func entryGetInt(e *EntryWidget) int {
 	return v
 }
 
-// packRight packs a child into a parent using Side(RIGHT).
-func packRight(child, parent any) {
-	Pack(child.(Widget), In(parent.(Widget)), Side(RIGHT), Padx(2))
-}
-
 // ─── Calibration Value dialog ─────────────────────────────────────────────────
 func openCalibrationDialog() {
 	top, body := makeDialogShell("Calibration Value", 700, 620)
@@ -419,7 +414,7 @@ func openSpecimenDialog() {
 		Background(bgPanel), Anchor(W), Pady(3),
 	)
 	Pack(applbl, Fill(FILL_X))
-	apparatus := body.Frame(Background(bgPanel))
+	apparatus := appGrp.Frame(Background(bgPanel))
 	Pack(apparatus, Fill(FILL_X), Side(TOP), Pady(1))
 	_, memE := mkRow(apparatus, "Young's Modulus of membrane (kPa)", 8)
 	_, memT := mkRow(apparatus, "Thickness of membrane (mm)", 8)
@@ -748,6 +743,7 @@ func openStepCtrlDialog() {
 	stepEntry := ctrlRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(8), Relief(SUNKEN), Borderwidth(1),
+		State("disabled"),
 	)
 	Pack(stepEntry, Side(LEFT), Padx(4))
 	lbl = ctrlRow.Label(
@@ -758,6 +754,7 @@ func openStepCtrlDialog() {
 	ctrlEntry := ctrlRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(8), Relief(SUNKEN), Borderwidth(1),
+		State("disabled"),
 	)
 	Pack(ctrlEntry, Side(LEFT), Padx(4))
 	changeChk := ctrlRow.Checkbutton(
@@ -897,8 +894,8 @@ func openStepCtrlDialog() {
 	curStep := appData.stepCtrl.StepNo
 	curCtrl := appData.stepCtrl.ControlNo
 	appData.mu.RUnlock()
-	entrySet(stepEntry, curStep)
-	entrySet(ctrlEntry, curCtrl)
+	entrySetRO(stepEntry, curStep)
+	entrySetRO(ctrlEntry, curCtrl)
 	entrySet(editStep, curStep)
 	entrySet(editCtrl, curCtrl)
 }
@@ -1127,6 +1124,3 @@ func appendTextWidget(t *TextWidget, s string) {
 
 // loadConfigsOnStartup is invoked once from main() at startup.
 func loadConfigsOnStartup() { loadAllConfigs() }
-
-// suppress unused-symbol warning for the helper used by main.go's ticker.
-var _ = packRight
