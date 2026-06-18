@@ -3,18 +3,18 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	. "modernc.org/tk9.0"
+	"modernc.org/tk9.0/extensions/eval"
 )
 
-// ─── Persistence path ─────────────────────────────────────────────────────────
-// All configuration is stored in a single JSON file under the user's
-// config directory.  This mirrors the C++ version's appdata folder layout.
+// ─── Persistence ──────────────────────────────────────────────────────────────
+
 func configDir() string {
 	if d, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(d, "DigitShowGo")
@@ -22,16 +22,9 @@ func configDir() string {
 	return "."
 }
 
-func configPath(name string) string {
-	return filepath.Join(configDir(), name)
-}
+func configPath(name string) string { return filepath.Join(configDir(), name) }
+func ensureConfigDir()               { _ = os.MkdirAll(configDir(), 0o755) }
 
-func ensureConfigDir() {
-	_ = os.MkdirAll(configDir(), 0o755)
-}
-
-// loadJSON reads a JSON file into v.  Missing file is not an error - defaults
-// are kept in appData.
 func loadJSON(name string, v any) error {
 	b, err := os.ReadFile(configPath(name))
 	if err != nil {
@@ -40,7 +33,6 @@ func loadJSON(name string, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// saveJSON writes v to the config file (pretty-printed, 2-space indent).
 func saveJSON(name string, v any) error {
 	ensureConfigDir()
 	b, err := json.MarshalIndent(v, "", "  ")
@@ -50,36 +42,21 @@ func saveJSON(name string, v any) error {
 	return os.WriteFile(configPath(name), b, 0o644)
 }
 
-// ─── AppData snapshot types for JSON ──────────────────────────────────────────
-type calibrationFile struct {
-	Cal [16]CalCoeff `json:"cal"`
-}
-
-type specimenFile struct {
-	Specimen SpecimenData `json:"specimen"`
-}
-
-type preConFile struct {
-	PreCon PreConParams `json:"preCon"`
-}
-
-type stepCtrlFile struct {
-	Step StepCtrl `json:"step"`
-}
-
-type envVarsFile struct {
-	Env EnvVars `json:"env"`
-}
+type calibrationFile struct{ Cal [16]CalCoeff `json:"cal"` }
+type specimenFile struct{ Specimen SpecimenData `json:"specimen"` }
+type preConFile struct{ PreCon PreConParams `json:"preCon"` }
+type stepCtrlFile struct{ Step StepCtrl `json:"step"` }
+type envVarsFile struct{ Env EnvVars `json:"env"` }
 
 func saveAllConfigs() {
 	ensureConfigDir()
 	appData.mu.RLock()
-	defer appData.mu.RUnlock()
 	_ = saveJSON("calibration.json", calibrationFile{Cal: appData.cal})
 	_ = saveJSON("specimen.json", specimenFile{Specimen: appData.specimen})
 	_ = saveJSON("precon.json", preConFile{PreCon: appData.preCon})
 	_ = saveJSON("stepctrl.json", stepCtrlFile{Step: appData.stepCtrl})
 	_ = saveJSON("envvars.json", envVarsFile{Env: appData.envVars})
+	appData.mu.RUnlock()
 }
 
 func loadAllConfigs() {
@@ -122,20 +99,16 @@ func loadAllConfigs() {
 
 // ─── Dialog helpers ───────────────────────────────────────────────────────────
 
-// makeDialogShell creates a Toplevel window with the given title and size,
-// applies the standard dark theme, and returns the body frame.  Closing the
-// window is handled by the caller (typically a Close button calling
-// `Win.Destroy()`).
+// makeDialogShell creates a Toplevel window with title and size, returning
+// the top-level widget (for use with `Destroy(top)`) and the body frame.
 func makeDialogShell(title string, w, h int) (top *ToplevelWidget, body *FrameWidget) {
 	top = Toplevel(Title(title), Background(bgMain))
-	WmGeometry(top, fmt.Sprintf("%dx%d", w, h))
+	WmGeometry(top.Window, fmt.Sprintf("%dx%d", w, h))
 	body = top.Frame(Background(bgMain), Padx(8), Pady(8))
 	Pack(body, Fill(FILL_BOTH), Expand(true))
 	return top, body
 }
 
-// mkRow makes a horizontal row with a label and a value-entry combo.  The
-// returned Entry is editable and can be wired to read on Update.
 func mkRow(parent *FrameWidget, label string, width int) (row *FrameWidget, e *EntryWidget) {
 	row = parent.Frame(Background(bgPanel))
 	Pack(row, Fill(FILL_X), Side(TOP), Pady(1))
@@ -144,8 +117,7 @@ func mkRow(parent *FrameWidget, label string, width int) (row *FrameWidget, e *E
 		Foreground(fgText), Background(bgPanel), Width(22), Anchor(W),
 	)
 	e = row.Entry(
-		Font("Courier", 9),
-		Background(bgCell), Foreground(fgText),
+		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(width), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(e, Side(LEFT), Padx(4))
@@ -153,99 +125,85 @@ func mkRow(parent *FrameWidget, label string, width int) (row *FrameWidget, e *E
 }
 
 func entrySet(e *EntryWidget, v any) {
-	EvalErr(fmt.Sprintf("%s delete 0 end; %s insert 0 [list {%v}]", e, e, fmt.Sprint(v)))
+	eval.EvalErr(fmt.Sprintf("%s delete 0 end; %s insert 0 {%v}", e, e, fmt.Sprint(v)))
 }
 
 func entryGet(e *EntryWidget) string {
-	return EvalErr(fmt.Sprintf("%s get", e))
+	return eval.EvalErr(fmt.Sprintf("%s get", e))
 }
 
 func entryGetFloat(e *EntryWidget) float64 {
-	s := entryGet(e)
-	v, _ := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	v, _ := strconv.ParseFloat(strings.TrimSpace(entryGet(e)), 64)
 	return v
 }
 
 func entryGetInt(e *EntryWidget) int {
-	s := entryGet(e)
-	v, _ := strconv.Atoi(strings.TrimSpace(s))
+	v, _ := strconv.Atoi(strings.TrimSpace(entryGet(e)))
 	return v
 }
 
+// packRight packs a child into a parent using Side(RIGHT).
+func packRight(child, parent any) {
+	Pack(child.(Widget), In(parent.(Widget)), Side(RIGHT), Padx(2))
+}
+
 // ─── Calibration Value dialog ─────────────────────────────────────────────────
-// Per-channel quadratic y = a*x^2 + b*x + c.  Mirrors DigitShowModbus' IDD_Calibration_Factor.
 func openCalibrationDialog() {
-	top, body := makeDialogShell("Calibration Value", 700, 600)
-	defer func() { _ = top }()
+	top, body := makeDialogShell("Calibration Value", 700, 620)
 
-	// Header row
-	head := body.Frame(Background(bgPanel))
-	Pack(head, Fill(FILL_X), Side(TOP), Pady(2))
-	hdrs := []string{"x : Raw Value", "", "y : Physical Value",
-		"a * x^2", "b * x", "c", "y", ""}
-	for i, h := range hdrs {
-		lbl := head.Label(
-			Txt(h), Font(HELVETICA, 9, BOLD),
+	// Header
+	hdr := body.Frame(Background(bgPanel))
+	Pack(hdr, Fill(FILL_X), Side(TOP), Pady(2))
+	hdrTitles := []string{"x : Raw Value", "y : Physical Value", "a*x^2", "b*x", "c", "y"}
+	hdrWidths := []int{22, 22, 8, 8, 8, 8}
+	for i, t := range hdrTitles {
+		hdr.Label(
+			Txt(t), Font(HELVETICA, 9, BOLD),
 			Foreground(fgAccent), Background(bgPanel),
-			Width(12), Anchor(W),
+			Width(hdrWidths[i]), Anchor(W),
 		)
-		Pack(lbl, Side(LEFT), Padx(2))
-		_ = i
+		Pack(hdr, Side(LEFT), Padx(2))
 	}
-
-	// 16 channel rows
-	aEntries := [16]*EntryWidget{}
-	bEntries := [16]*EntryWidget{}
-	cEntries := [16]*EntryWidget{}
-	yEntries := [16]*EntryWidget{}
-	rawLabels := [16]*LabelWidget{}
-	phyLabels := [16]*LabelWidget{}
-	zeroBtns := [16]*ButtonWidget{}
 
 	appData.mu.RLock()
 	cal := appData.cal
 	appData.mu.RUnlock()
 
-	grid := body.Frame(Background(bgPanel))
-	Pack(grid, Fill(FILL_BOTH), Expand(true), Side(TOP))
+	aEntries := [16]*EntryWidget{}
+	bEntries := [16]*EntryWidget{}
+	cEntries := [16]*EntryWidget{}
+	yEntries := [16]*EntryWidget{}
 
 	for i := 0; i < 16; i++ {
-		row := grid.Frame(Background(bgPanel))
+		row := body.Frame(Background(bgPanel))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(0))
 
-		// Raw channel name (CH00:LoadCell(i16) etc.)
-		rawLabels[i] = row.Label(
+		row.Label(
 			Txt(fmt.Sprintf("%02d:%s(i16)", i, rawChNames[i])),
 			Font(HELVETICA, 8), Foreground(fgLabel),
-			Background(bgPanel), Width(18), Anchor(W),
+			Background(bgPanel), Width(22), Anchor(W),
 		)
-		Pack(rawLabels[i], Side(LEFT), Padx(2))
-
-		// --->
-		row.Label(Txt("-->"), Font(HELVETICA, 8), Foreground(fgDim), Background(bgPanel), Width(3), Anchor(W))
-		phyLabels[i] = row.Label(
+		Pack(row, Side(LEFT), Padx(2))
+		row.Label(
+			Txt("-->"), Font(HELVETICA, 8), Foreground(fgDim),
+			Background(bgPanel), Width(3), Anchor(W),
+		)
+		Pack(row, Side(LEFT), Padx(2))
+		row.Label(
 			Txt(fmt.Sprintf("%02d:%s(%s)", i, physChNames[i], physUnits[i])),
 			Font(HELVETICA, 8), Foreground(fgLabel),
-			Background(bgPanel), Width(18), Anchor(W),
+			Background(bgPanel), Width(22), Anchor(W),
 		)
-		Pack(phyLabels[i], Side(LEFT), Padx(2))
+		Pack(row, Side(LEFT), Padx(2))
 
-		aEntries[i] = row.Entry(
-			Font("Courier", 9), Background(bgCell), Foreground(fgText),
-			Width(8), Relief(SUNKEN), Borderwidth(1),
-		)
-		bEntries[i] = row.Entry(
-			Font("Courier", 9), Background(bgCell), Foreground(fgText),
-			Width(8), Relief(SUNKEN), Borderwidth(1),
-		)
-		cEntries[i] = row.Entry(
-			Font("Courier", 9), Background(bgCell), Foreground(fgText),
-			Width(8), Relief(SUNKEN), Borderwidth(1),
-		)
-		yEntries[i] = row.Entry(
-			Font("Courier", 9), Background(bgCell), Foreground(fgText),
-			Width(8), Relief(SUNKEN), Borderwidth(1),
-		)
+		aEntries[i] = row.Entry(Font("Courier", 9), Background(bgCell), Foreground(fgText),
+			Width(8), Relief(SUNKEN), Borderwidth(1))
+		bEntries[i] = row.Entry(Font("Courier", 9), Background(bgCell), Foreground(fgText),
+			Width(8), Relief(SUNKEN), Borderwidth(1))
+		cEntries[i] = row.Entry(Font("Courier", 9), Background(bgCell), Foreground(fgText),
+			Width(8), Relief(SUNKEN), Borderwidth(1))
+		yEntries[i] = row.Entry(Font("Courier", 9), Background(bgCell), Foreground(fgText),
+			Width(8), Relief(SUNKEN), Borderwidth(1))
 		entrySet(aEntries[i], cal[i].A)
 		entrySet(bEntries[i], cal[i].B)
 		entrySet(cEntries[i], cal[i].C)
@@ -256,37 +214,41 @@ func openCalibrationDialog() {
 		Pack(yEntries[i], Side(LEFT), Padx(1))
 
 		idx := i
-		zeroBtns[i] = row.Button(
+		zb := row.Button(
 			Txt(fmt.Sprintf("%02d:Zero", i)), Font(HELVETICA, 8),
 			Background(bgBtn), Foreground(fgText),
 			Width(9), Command(func() { onZeroCalibration(idx, aEntries, bEntries, cEntries, yEntries) }),
 		)
-		Pack(zeroBtns[i], Side(LEFT), Padx(2))
+		Pack(zb, Side(LEFT), Padx(2))
 	}
 
-	// Footer buttons: Update / Save / Load / Close
-	footer := body.Frame(Background(bgPanel))
-	Pack(footer, Fill(FILL_X), Side(TOP), Pady(4))
-	footer.Button(
+	// Footer
+	foot := body.Frame(Background(bgPanel))
+	Pack(foot, Fill(FILL_X), Side(TOP), Pady(4))
+	updateBtn := foot.Button(
 		Txt("Update Variants"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText),
 		Width(14), Command(func() { onUpdateCalibration(aEntries, bEntries, cEntries) }),
-	).Pack(footer, Side(LEFT), Padx(2))
-	footer.Button(
+	)
+	loadBtn := foot.Button(
 		Txt("Load from a file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText),
 		Width(14), Command(func() { onLoadCalibration(aEntries, bEntries, cEntries) }),
-	).Pack(footer, Side(LEFT), Padx(2))
-	footer.Button(
+	)
+	saveBtn := foot.Button(
 		Txt("Save to a file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText),
 		Width(14), Command(func() { onSaveCalibration(aEntries, bEntries, cEntries) }),
-	).Pack(footer, Side(LEFT), Padx(2))
-	footer.Button(
+	)
+	closeBtn := foot.Button(
 		Txt("Close"), Font(HELVETICA, 9, BOLD),
 		Background(bgRed), Foreground("#ffffff"),
-		Width(10), Command(func() { top.Destroy() }),
-	).Pack(footer, Side(RIGHT), Padx(2))
+		Width(10), Command(func() { Destroy(top) }),
+	)
+	Pack(updateBtn, Side(LEFT), Padx(2))
+	Pack(loadBtn, Side(LEFT), Padx(2))
+	Pack(saveBtn, Side(LEFT), Padx(2))
+	Pack(closeBtn, Side(RIGHT), Padx(2))
 }
 
 func onUpdateCalibration(a, b, c [16]*EntryWidget) {
@@ -298,12 +260,9 @@ func onUpdateCalibration(a, b, c [16]*EntryWidget) {
 			C: entryGetFloat(c[i]),
 		}
 	}
+	cal := appData.cal
 	appData.mu.Unlock()
-	_ = saveJSON("calibration.json", calibrationFile{Cal: func() [16]CalCoeff {
-		appData.mu.RLock()
-		defer appData.mu.RUnlock()
-		return appData.cal
-	}()})
+	_ = saveJSON("calibration.json", calibrationFile{Cal: cal})
 	appendLog("[calib] variants updated")
 }
 
@@ -330,10 +289,9 @@ func onLoadCalibration(a, b, c [16]*EntryWidget) {
 }
 
 // onZeroCalibration offsets c by -current_physical_value, matching the
-// C++ `c = c - phy` behaviour.
+// C++ `c = c - phy` behaviour in IDD_Calibration_Factor.
 func onZeroCalibration(idx int, a, b, c, y [16]*EntryWidget) {
 	onUpdateCalibration(a, b, c)
-	// Compute current physical value at the latest raw reading.
 	appData.mu.RLock()
 	r := appData.raw[idx]
 	cal := appData.cal[idx]
@@ -346,14 +304,12 @@ func onZeroCalibration(idx int, a, b, c, y [16]*EntryWidget) {
 	appData.mu.Unlock()
 	entrySet(c[idx], newC)
 	_ = y
-	_ = math.Pi // keep math import alive
 	appendLog(fmt.Sprintf("[calib] zero CH%02d: c <- %.6f", idx, newC))
 }
 
 // ─── VoltageOut dialog ────────────────────────────────────────────────────────
-// 8-channel DA voltage output, mirrors IDD_Dialog_VoltageOut.
 func openVoltageOutDialog() {
-	top, body := makeDialogShell("Voltage Output on DA Board", 360, 380)
+	top, body := makeDialogShell("Voltage Output on DA Board", 380, 400)
 
 	head := body.Frame(Background(bgPanel))
 	Pack(head, Fill(FILL_X), Side(TOP))
@@ -364,32 +320,32 @@ func openVoltageOutDialog() {
 		Txt("Voltage (V)"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgAccent), Background(bgPanel), Width(12), Anchor(E),
 	)
-	head.Label(
-		Txt(""), Font(HELVETICA, 9), Background(bgPanel), Width(4),
-	)
+	Pack(head, Side(LEFT), Padx(2))
 
 	right := body.Frame(Background(bgPanel))
 	Pack(right, Side(RIGHT), Fill(FILL_Y), Padx(4))
-	right.Button(
-		Txt("Reflesh"), Font(HELVETICA, 9),
+	refBtn := right.Button(
+		Txt("Refresh"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
 		Command(func() { onRefreshVoltage(voltEntries) }),
-	).Pack(right, Side(TOP), Pady(2))
-	right.Button(
+	)
+	outBtn := right.Button(
 		Txt("Output"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
 		Command(func() { onOutputVoltage(voltEntries) }),
-	).Pack(right, Side(TOP), Pady(2))
-	right.Button(
+	)
+	closeBtn := right.Button(
 		Txt("Close"), Font(HELVETICA, 9, BOLD),
 		Background(bgRed), Foreground("#ffffff"), Width(8),
-		Command(func() { top.Destroy() }),
-	).Pack(right, Side(TOP), Pady(20))
+		Command(func() { Destroy(top) }),
+	)
+	Pack(refBtn, Side(TOP), Pady(2))
+	Pack(outBtn, Side(TOP), Pady(2))
+	Pack(closeBtn, Side(TOP), Pady(20))
 
 	left := body.Frame(Background(bgCell), Relief(SUNKEN), Borderwidth(1))
 	Pack(left, Side(LEFT), Fill(FILL_BOTH), Expand(true), Padx(2))
 
-	voltEntries := [8]*EntryWidget{}
 	appData.mu.RLock()
 	volts := appData.volts
 	appData.mu.RUnlock()
@@ -418,7 +374,7 @@ func onOutputVoltage(e [8]*EntryWidget) {
 		appData.volts[i] = entryGetFloat(e[i])
 	}
 	appData.mu.Unlock()
-	appendLog("[dac] voltage out applied (UI-side echo; real board output not wired yet)")
+	appendLog("[dac] voltage out applied (UI-side echo)")
 }
 
 func onRefreshVoltage(e [8]*EntryWidget) {
@@ -428,15 +384,14 @@ func onRefreshVoltage(e [8]*EntryWidget) {
 	for i := 0; i < 8; i++ {
 		entrySet(e[i], volts[i])
 	}
-	appendLog("[dac] refreshed from current state")
+	appendLog("[dac] refreshed")
 }
 
 // ─── Specimen Data dialog ──────────────────────────────────────────────────────
-// Mirrors IDD_SpecimenData: 4 columns (Present, Initial, Before Consol, After Consol).
 func openSpecimenDialog() {
-	top, body := makeDialogShell("Specimen Data", 580, 540)
+	top, body := makeDialogShell("Specimen Data", 620, 580)
 
-	// Apparatus parameters
+	// Apparatus group
 	appGrp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(appGrp, Fill(FILL_X), Side(TOP), Pady(2))
 	applbl := appGrp.Label(
@@ -445,26 +400,25 @@ func openSpecimenDialog() {
 		Background(bgPanel), Anchor(W), Pady(3),
 	)
 	Pack(applbl, Fill(FILL_X))
-
 	apparatus := body.Frame(Background(bgPanel))
 	Pack(apparatus, Fill(FILL_X), Side(TOP), Pady(1))
-	memEEntry, _ := mkRow(apparatus, "Young's Modulus of membrane (kPa)", 8)
-	memTEntry, _ := mkRow(apparatus, "Thickness of membrane (mm)", 8)
-	capWEntry, _ := mkRow(apparatus, "Cap Weight (N)", 8)
+	_, memE := mkRow(apparatus, "Young's Modulus of membrane (kPa)", 8)
+	_, memT := mkRow(apparatus, "Thickness of membrane (mm)", 8)
+	_, capW := mkRow(apparatus, "Cap Weight (N)", 8)
 
 	appData.mu.RLock()
 	spec := appData.specimen
 	appData.mu.RUnlock()
-	entrySet(memEEntry, spec.MembraneE)
-	entrySet(memTEntry, spec.MembraneT)
-	entrySet(capWEntry, spec.CapWeight)
+	entrySet(memE, spec.MembraneE)
+	entrySet(memT, spec.MembraneT)
+	entrySet(capW, spec.CapWeight)
 
-	// 4-column input grid
+	// 4-column grid
 	grp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(grp, Fill(FILL_BOTH), Expand(true), Side(TOP), Pady(4))
 	hdr := grp.Frame(Background(bgPanel))
 	Pack(hdr, Fill(FILL_X), Side(TOP), Pady(2))
-	hdrs := []string{"", "Present", "Initial", "Before consolidation", "After consolidation"}
+	hdrs := []string{"", "Present", "Initial", "Before consol.", "After consol."}
 	widths := []int{16, 9, 9, 14, 14}
 	for i, h := range hdrs {
 		hdr.Label(
@@ -475,31 +429,18 @@ func openSpecimenDialog() {
 		Pack(hdr, Side(LEFT), Padx(2))
 	}
 
-	type stageEditor struct {
-		diameter, height, volume, area, ldt1, ldt2 *EntryWidget
-	}
-	stages := [4]stageEditor{}
+	stages := [4]specEditorStage{}
 	stageKeys := [4]*SpecimenStage{&spec.Present, &spec.Initial, &spec.BeforeCons, &spec.AfterCons}
+	rowDefs := []string{"Diameter (mm)", "Height (mm)", "Volume * (mm3)", "Area * (mm2)", "LDT1 (mm)", "LDT2 (mm)"}
 
-	rows := []struct {
-		name string
-		unit string
-		idx  int // 0..5 column in stage
-	}{
-		{"Diameter (mm)", "", 0},
-		{"Height (mm)", "", 1},
-		{"Volume * (mm3)", "", 2},
-		{"Area * (mm2)", "", 3},
-		{"LDT1 (mm)", "", 4},
-		{"LDT2 (mm)", "", 5},
-	}
-	for ri, rdef := range rows {
+	for ri, rname := range rowDefs {
 		row := grp.Frame(Background(bgPanel))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(0))
 		row.Label(
-			Txt(rdef.name), Font(HELVETICA, 9),
+			Txt(rname), Font(HELVETICA, 9),
 			Foreground(fgText), Background(bgPanel), Width(16), Anchor(W),
 		)
+		Pack(row, Side(LEFT))
 		for si := 0; si < 4; si++ {
 			entry := row.Entry(
 				Font("Courier", 9), Background(bgCell), Foreground(fgText),
@@ -507,71 +448,62 @@ func openSpecimenDialog() {
 			)
 			entrySet(entry, stageValueByIdx(stageKeys[si], ri))
 			Pack(entry, Side(LEFT), Padx(2))
-			switch ri {
-			case 0:
-				stages[si].diameter = entry
-			case 1:
-				stages[si].height = entry
-			case 2:
-				stages[si].volume = entry
-			case 3:
-				stages[si].area = entry
-			case 4:
-				stages[si].ldt1 = entry
-			case 5:
-				stages[si].ldt2 = entry
-			}
+			setSpecEditorField(&stages[si], ri, entry)
 		}
 	}
 
-	// Footer: Update, Save, Before/After consolidation, Close
-	foot := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
-	Pack(foot, Fill(FILL_X), Side(TOP), Pady(4))
-	footLbl := foot.Label(
+	// Footer
+	footGrp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
+	Pack(footGrp, Fill(FILL_X), Side(TOP), Pady(4))
+	footLbl := footGrp.Label(
 		Txt(" Update Reference Specimen Size and Initialize Strains"),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(2),
 	)
 	Pack(footLbl, Fill(FILL_X))
-	footRow := foot.Frame(Background(bgPanel))
-	Pack(footRow, Fill(FILL_X), Side(TOP))
-	footRow.Button(
+	beBtn := footGrp.Button(
 		Txt("Before Consolidation"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(18),
 		Command(func() { appendLog("[specimen] Before Consolidation pressed (no-op stub)") }),
-	).Pack(footRow, Side(LEFT), Padx(2))
-	footRow.Button(
+	)
+	afBtn := footGrp.Button(
 		Txt("After Consolidation"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(18),
 		Command(func() { appendLog("[specimen] After Consolidation pressed (no-op stub)") }),
-	).Pack(footRow, Side(LEFT), Padx(2))
+	)
+	Pack(beBtn, Side(LEFT), Padx(2))
+	Pack(afBtn, Side(LEFT), Padx(2))
 
 	footRow2 := body.Frame(Background(bgPanel))
 	Pack(footRow2, Fill(FILL_X), Side(TOP), Pady(2))
-	footRow2.Button(
+	updateBtn := footRow2.Button(
 		Txt("Update Params"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText), Width(14),
-		Command(func() {
-			onUpdateSpecimen(memEEntry, memTEntry, capWEntry, stages)
-		}),
-	).Pack(footRow2, Side(LEFT), Padx(2))
-	footRow2.Button(
+		Command(func() { onUpdateSpecimen(memE, memT, capW, stages) }),
+	)
+	saveBtn := footRow2.Button(
 		Txt("Save to file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(14),
 		Command(func() {
-			onUpdateSpecimen(memEEntry, memTEntry, capWEntry, stages)
+			onUpdateSpecimen(memE, memT, capW, stages)
 			appendLog("[specimen] saved to " + configPath("specimen.json"))
 		}),
-	).Pack(footRow2, Side(LEFT), Padx(2))
-	footRow2.Button(
+	)
+	closeBtn := footRow2.Button(
 		Txt("Close"), Font(HELVETICA, 9, BOLD),
 		Background(bgRed), Foreground("#ffffff"), Width(10),
-		Command(func() { top.Destroy() }),
-	).Pack(footRow2, Side(RIGHT), Padx(2))
+		Command(func() { Destroy(top) }),
+	)
+	Pack(updateBtn, Side(LEFT), Padx(2))
+	Pack(saveBtn, Side(LEFT), Padx(2))
+	Pack(closeBtn, Side(RIGHT), Padx(2))
+}
 
-	// Stash references on the toplevel so we don't need globals.
-	_ = body
-	_ = top
+func anchorForHeader(i int) any {
+	if i == 0 {
+		return W
+	}
+	return CENTER
 }
 
 func stageValueByIdx(s *SpecimenStage, idx int) float64 {
@@ -592,18 +524,25 @@ func stageValueByIdx(s *SpecimenStage, idx int) float64 {
 	return 0
 }
 
-// anchorForHeader is a Go-native replacement for the C++ `?:` ternary used in
-// the column-header loop of the Specimen dialog.  Column 0 is the row-name
-// label (left-aligned), the other four columns are stage headers (centered).
-func anchorForHeader(i int) any {
-	if i == 0 {
-		return W
-	}
-	return CENTER
-}
-
 type specEditorStage struct {
 	diameter, height, volume, area, ldt1, ldt2 *EntryWidget
+}
+
+func setSpecEditorField(s *specEditorStage, idx int, e *EntryWidget) {
+	switch idx {
+	case 0:
+		s.diameter = e
+	case 1:
+		s.height = e
+	case 2:
+		s.volume = e
+	case 3:
+		s.area = e
+	case 4:
+		s.ldt1 = e
+	case 5:
+		s.ldt2 = e
+	}
 }
 
 func onUpdateSpecimen(memE, memT, capW *EntryWidget, stages [4]specEditorStage) {
@@ -631,33 +570,31 @@ func onUpdateSpecimen(memE, memT, capW *EntryWidget, stages [4]specEditorStage) 
 
 // ─── Pre-Consolidation dialog ─────────────────────────────────────────────────
 func openPreConsolidationDialog() {
-	top, body := makeDialogShell("Control Parameters in Pre-Consolidation Process", 380, 230)
+	top, body := makeDialogShell("Control Parameters in Pre-Consolidation Process", 400, 240)
 
 	grp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(grp, Fill(FILL_X), Side(TOP), Pady(2))
-	grp.Label(
+	lbl := grp.Label(
 		Txt(" Settings of pre-consolidation"),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(3),
-	).Pack(grp, Fill(FILL_X))
+	)
+	Pack(lbl, Fill(FILL_X))
 
 	appData.mu.RLock()
 	pc := appData.preCon
 	appData.mu.RUnlock()
 
-	tgtRow, tgt := mkRow(grp, "Target Deviator Stress, q (kPa)", 8)
-	qErrRow, qErr := mkRow(grp, "q error at max motor speed (kPa)", 8)
-	spdRow, spd := mkRow(grp, "Max Motor Speed (rpm)", 8)
+	_, tgt := mkRow(grp, "Target Deviator Stress, q (kPa)", 8)
+	_, qErr := mkRow(grp, "q error at max motor speed (kPa)", 8)
+	_, spd := mkRow(grp, "Max Motor Speed (rpm)", 8)
 	entrySet(tgt, pc.TargetQ)
 	entrySet(qErr, pc.QError)
 	entrySet(spd, pc.MaxSpeed)
-	_ = tgtRow
-	_ = qErrRow
-	_ = spdRow
 
 	foot := body.Frame(Background(bgPanel))
 	Pack(foot, Fill(FILL_X), Side(TOP), Pady(4))
-	foot.Button(
+	updateBtn := foot.Button(
 		Txt("Update"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText), Width(10),
 		Command(func() {
@@ -672,75 +609,78 @@ func openPreConsolidationDialog() {
 			_ = saveJSON("precon.json", preConFile{PreCon: snap})
 			appendLog("[precon] updated")
 		}),
-	).Pack(foot, Side(LEFT), Padx(2))
-	foot.Button(
+	)
+	closeBtn := foot.Button(
 		Txt("Close"), Font(HELVETICA, 9, BOLD),
 		Background(bgRed), Foreground("#ffffff"), Width(10),
-		Command(func() { top.Destroy() }),
-	).Pack(foot, Side(RIGHT), Padx(2))
+		Command(func() { Destroy(top) }),
+	)
+	Pack(updateBtn, Side(LEFT), Padx(2))
+	Pack(closeBtn, Side(RIGHT), Padx(2))
 }
 
 // ─── Step Control dialog ──────────────────────────────────────────────────────
 func openStepCtrlDialog() {
-	top, body := makeDialogShell("Step Control", 900, 460)
+	top, body := makeDialogShell("Step Control", 900, 480)
 
-	// Top: current step/control no + load/save/close
+	// Header: read-only step/control no + checkbox + <-> arrows
 	topRow := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(topRow, Fill(FILL_X), Side(TOP), Pady(2))
 	topRow.Label(
 		Txt(" Step Control"),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(3),
-	).Pack(topRow, Fill(FILL_X))
+	)
+	Pack(topRow, Fill(FILL_X))
 
 	ctrlRow := body.Frame(Background(bgPanel))
 	Pack(ctrlRow, Fill(FILL_X), Side(TOP), Pady(1))
-	stepLbl := ctrlRow.Label(
+	ctrlRow.Label(
 		Txt("Current Step No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(16), Anchor(W),
 	)
-	Pack(stepLbl, Side(LEFT))
 	stepEntry := ctrlRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(8), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(stepEntry, Side(LEFT), Padx(4))
-
-	ctrlLbl := ctrlRow.Label(
+	ctrlRow.Label(
 		Txt("Current Control No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(18), Anchor(W),
 	)
-	Pack(ctrlLbl, Side(LEFT), Padx(8))
+	Pack(ctrlRow, Side(LEFT), Padx(8))
 	ctrlEntry := ctrlRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(8), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(ctrlEntry, Side(LEFT), Padx(4))
-
 	changeChk := ctrlRow.Checkbutton(
 		Txt("ChangeNo"), Font(HELVETICA, 9),
 		Background(bgPanel), Foreground(fgText),
 	)
 	Pack(changeChk, Side(LEFT), Padx(4))
-	ctrlRow.Button(
+	decBtn := ctrlRow.Button(
 		Txt("<-"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(4),
 		Command(func() { appendLog("[step] step-- (no-op stub)") }),
-	).Pack(ctrlRow, Side(LEFT), Padx(2))
-	ctrlRow.Button(
+	)
+	incBtn := ctrlRow.Button(
 		Txt("->"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(4),
 		Command(func() { appendLog("[step] step++ (no-op stub)") }),
-	).Pack(ctrlRow, Side(LEFT), Padx(2))
+	)
+	Pack(decBtn, Side(LEFT), Padx(2))
+	Pack(incBtn, Side(LEFT), Padx(2))
 
-	// Editable step/control no + Load/Update
+	// Editable
 	editRow := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(editRow, Fill(FILL_X), Side(TOP), Pady(2))
 	editRow.Label(
 		Txt(" Control Arguments"),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(3),
-	).Pack(editRow, Fill(FILL_X))
+	)
+	Pack(editRow, Fill(FILL_X))
 
 	idxRow := editRow.Frame(Background(bgPanel))
 	Pack(idxRow, Fill(FILL_X), Side(TOP), Pady(1))
@@ -757,17 +697,18 @@ func openStepCtrlDialog() {
 		Txt("Control No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(10), Anchor(W),
 	)
+	Pack(idxRow, Side(LEFT))
 	editCtrl := idxRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(6), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(editCtrl, Side(LEFT), Padx(2))
-	idxRow.Button(
+	loadBtn := idxRow.Button(
 		Txt("Load"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
 		Command(func() { appendLog("[step] Load (no-op stub)") }),
-	).Pack(idxRow, Side(LEFT), Padx(2))
-	idxRow.Button(
+	)
+	updArgs := idxRow.Button(
 		Txt("Update"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
 		Command(func() {
@@ -779,7 +720,9 @@ func openStepCtrlDialog() {
 			_ = saveJSON("stepctrl.json", stepCtrlFile{Step: snap})
 			appendLog("[step] updated")
 		}),
-	).Pack(idxRow, Side(LEFT), Padx(2))
+	)
+	Pack(loadBtn, Side(LEFT), Padx(2))
+	Pack(updArgs, Side(LEFT), Padx(2))
 
 	// 16 Args entries
 	argRow := editRow.Frame(Background(bgPanel))
@@ -806,28 +749,20 @@ func openStepCtrlDialog() {
 	Pack(desc, Fill(FILL_BOTH), Expand(true), Side(TOP), Pady(4))
 	descLbl := desc.Text(
 		Font("Courier", 8), Background(bgCell), Foreground(fgText),
-		Height(8), Wrap(WRAP_WORD), State(DISABLED),
+		Height(8), Wrap("word"), State("disabled"),
 	)
 	Pack(descLbl, Fill(FILL_BOTH), Expand(true))
-	helpText := `Control No.  Unit: Stress (kPa), Stress_rate (kPa/min), Motor_Speed (RPM), Strain (%), Time (min)
-0: Stop
-1: Monotonic Axial Loading  ([0] 0:compression/1:extension, [1] motor_speed, [2] eff_rad_stress*, [3] enable_axial_strain_limiter?, [4] axial_strain_limit, [5] enable_q_limiter?, [6] q_limit)
-2: Cyclic Axial Loading Between Specified STRESS Limits
-3: Cyclic Axial Loading Between Specified STRAIN Limits
-4: Creep  ([0] q, [1] q_error_at_max_motor_speed, [2] max_motor_speed, [3] duration_time, [4] eff_rad_stress*)
-5: Linear Stress Path Loading
-* Effective radial stress is controlled only when a POSITIVE value is entered.`
-	appendTextWidget(descLbl, helpText)
+	appendTextWidget(descLbl, stepCtrlHelp)
 
 	// Footer
 	foot := body.Frame(Background(bgPanel))
 	Pack(foot, Fill(FILL_X), Side(TOP), Pady(2))
-	foot.Button(
+	readBtn := foot.Button(
 		Txt("Read from file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(14),
 		Command(func() { appendLog("[step] Read from file (no-op stub)") }),
-	).Pack(foot, Side(LEFT), Padx(2))
-	foot.Button(
+	)
+	writeBtn := foot.Button(
 		Txt("Save to file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(14),
 		Command(func() {
@@ -840,12 +775,15 @@ func openStepCtrlDialog() {
 			_ = saveJSON("stepctrl.json", stepCtrlFile{Step: snap})
 			appendLog("[step] saved to " + configPath("stepctrl.json"))
 		}),
-	).Pack(foot, Side(LEFT), Padx(2))
-	foot.Button(
+	)
+	closeBtn := foot.Button(
 		Txt("Close"), Font(HELVETICA, 9, BOLD),
 		Background(bgRed), Foreground("#ffffff"), Width(10),
-		Command(func() { top.Destroy() }),
-	).Pack(foot, Side(RIGHT), Padx(2))
+		Command(func() { Destroy(top) }),
+	)
+	Pack(readBtn, Side(LEFT), Padx(2))
+	Pack(writeBtn, Side(LEFT), Padx(2))
+	Pack(closeBtn, Side(RIGHT), Padx(2))
 
 	appData.mu.RLock()
 	curStep := appData.stepCtrl.StepNo
@@ -857,9 +795,18 @@ func openStepCtrlDialog() {
 	entrySet(editCtrl, curCtrl)
 }
 
+const stepCtrlHelp = `Control No.  Unit: Stress (kPa), Stress_rate (kPa/min), Motor_Speed (RPM), Strain (%), Time (min)
+0: Stop
+1: Monotonic Axial Loading  ([0] 0:compression/1:extension, [1] motor_speed, [2] eff_rad_stress*, [3] enable_axial_strain_limiter?, [4] axial_strain_limit, [5] enable_q_limiter?, [6] q_limit)
+2: Cyclic Axial Loading Between Specified STRESS Limits
+3: Cyclic Axial Loading Between Specified STRAIN Limits
+4: Creep  ([0] q, [1] q_error_at_max_motor_speed, [2] max_motor_speed, [3] duration_time, [4] eff_rad_stress*)
+5: Linear Stress Path Loading
+* Effective radial stress is controlled only when a POSITIVE value is entered.`
+
 // ─── Environmental Variables dialog ────────────────────────────────────────────
 func openEnvVarDialog() {
-	top, body := makeDialogShell("Environmental Variables", 520, 520)
+	top, body := makeDialogShell("Environmental Variables", 540, 540)
 
 	warn := body.Label(
 		Txt(" Caution! Changing these values during control may cause unexpected behaviour or force termination of the application."),
@@ -867,7 +814,6 @@ func openEnvVarDialog() {
 		Background(bgCell), Anchor(W), Pady(4),
 	)
 	Pack(warn, Fill(FILL_X), Side(TOP))
-
 	acceptChk := body.Checkbutton(
 		Txt("Accept Risks"), Font(HELVETICA, 9),
 		Background(bgPanel), Foreground(fgText),
@@ -889,7 +835,6 @@ func openEnvVarDialog() {
 	appData.mu.RUnlock()
 
 	entries := [16]*EntryWidget{}
-	currLabels := [16]*LabelWidget{}
 	for i := 0; i < 16; i++ {
 		row := body.Frame(Background(bgPanel))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(0))
@@ -897,11 +842,11 @@ func openEnvVarDialog() {
 			Txt(env.Names[i]), Font(HELVETICA, 8),
 			Foreground(fgLabel), Background(bgPanel), Width(30), Anchor(W),
 		)
-		currLabels[i] = row.Label(
+		row.Label(
 			Txt(fmt.Sprintf("%g", env.Values[i])), Font(HELVETICA, 8),
 			Foreground(fgDim), Background(bgPanel), Width(12), Anchor(W),
 		)
-		Pack(currLabels[i], Side(LEFT), Padx(2))
+		Pack(row, Side(LEFT), Padx(2))
 		entries[i] = row.Entry(
 			Font("Courier", 9), Background(bgCell), Foreground(fgText),
 			Width(10), Relief(SUNKEN), Borderwidth(1),
@@ -909,15 +854,10 @@ func openEnvVarDialog() {
 		entrySet(entries[i], env.Values[i])
 		Pack(entries[i], Side(LEFT), Padx(2))
 		idx := i
-		row.Button(
+		upBtn := row.Button(
 			Txt("Update"), Font(HELVETICA, 8),
 			Background(bgBtn), Foreground(fgText), Width(7),
 			Command(func() {
-				if acceptChk == nil {
-					appendLog("[env] please tick 'Accept Risks' before updating")
-					return
-				}
-				// Reflect is harder; for now just always allow.
 				appData.mu.Lock()
 				appData.envVars.Values[idx] = entryGetFloat(entries[idx])
 				snap := appData.envVars
@@ -925,12 +865,14 @@ func openEnvVarDialog() {
 				_ = saveJSON("envvars.json", envVarsFile{Env: snap})
 				appendLog(fmt.Sprintf("[env] %s = %g", snap.Names[idx], snap.Values[idx]))
 			}),
-		).Pack(row, Side(LEFT), Padx(2))
+		)
+		Pack(upBtn, Side(LEFT), Padx(2))
 	}
+	_ = acceptChk // Accept Risks toggle is purely visual in this stub.
 
 	foot := body.Frame(Background(bgPanel))
 	Pack(foot, Fill(FILL_X), Side(TOP), Pady(4))
-	foot.Button(
+	upAllBtn := foot.Button(
 		Txt("Update All"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText), Width(12),
 		Command(func() {
@@ -943,17 +885,19 @@ func openEnvVarDialog() {
 			_ = saveJSON("envvars.json", envVarsFile{Env: snap})
 			appendLog("[env] all values saved to " + configPath("envvars.json"))
 		}),
-	).Pack(foot, Side(LEFT), Padx(2))
-	foot.Button(
+	)
+	closeBtn := foot.Button(
 		Txt("Close"), Font(HELVETICA, 9, BOLD),
 		Background(bgRed), Foreground("#ffffff"), Width(10),
-		Command(func() { top.Destroy() }),
-	).Pack(foot, Side(RIGHT), Padx(2))
+		Command(func() { Destroy(top) }),
+	)
+	Pack(upAllBtn, Side(LEFT), Padx(2))
+	Pack(closeBtn, Side(RIGHT), Padx(2))
 }
 
 // ─── Version dialog ───────────────────────────────────────────────────────────
 func openVersionDialog() {
-	top, body := makeDialogShell("DigitShowGo", 460, 360)
+	top, body := makeDialogShell("DigitShowGo", 480, 380)
 
 	row := body.Frame(Background(bgPanel))
 	Pack(row, Fill(FILL_X), Side(TOP), Pady(4))
@@ -963,15 +907,16 @@ func openVersionDialog() {
 		Background(bgPanel), Anchor(W),
 	)
 	Pack(row, Side(LEFT), Padx(8))
-	row.Button(
+	okBtn := row.Button(
 		Txt("OK"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText), Width(8),
-		Command(func() { top.Destroy() }),
-	).Pack(row, Side(RIGHT), Padx(8))
+		Command(func() { Destroy(top) }),
+	)
+	Pack(okBtn, Side(RIGHT), Padx(8))
 
 	txt := body.Text(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
-		Height(18), Wrap(WRAP_WORD), State(DISABLED),
+		Height(18), Wrap("word"), State("disabled"),
 	)
 	Pack(txt, Fill(FILL_BOTH), Expand(true), Pady(4))
 	appendTextWidget(txt, versionInfo())
@@ -989,7 +934,7 @@ DigitShowModbus (UT-DSM License v1.0).
 Features ported so far:
   - Modbus RTU FC04 polling (COM12 preferred)
   - 16-ch raw / 16-ch physical / 32-ch parameter display
-  - 8-ch voltage out (8 ch)
+  - 8-ch voltage out (UI side)
   - Calibration Value dialog (a*x^2 + b*x + c)
   - Voltage Output dialog
   - Specimen Data dialog (4 stages)
@@ -1000,7 +945,7 @@ Features ported so far:
   - JSON-backed persistence under os.UserConfigDir
 
 Open TODOs:
-  - Real board output for DA voltage (currently UI-only)
+  - Real board output for DA voltage
   - SQLite logging of measured data
   - High-speed Chart (currently a low-rate Tk canvas strip)
   - LMDB-backed preview buffer for fast rewind/replay
@@ -1014,13 +959,19 @@ Open TODOs:
 func appendTextWidget(t *TextWidget, s string) {
 	ts := time.Now().Format("2006-01-02 15:04:05.0")
 	body := fmt.Sprintf("[%s]\n%s\n", ts, s)
-	EvalErr(fmt.Sprintf("%s configure -state normal", t))
-	EvalErr(fmt.Sprintf("%s insert end {%s}", t, body))
-	EvalErr(fmt.Sprintf("%s see end", t))
-	EvalErr(fmt.Sprintf("%s configure -state disabled", t))
+	eval.EvalErr(fmt.Sprintf("%s configure -state normal", t))
+	eval.EvalErr(fmt.Sprintf("%s insert end {%s}", t, body))
+	eval.EvalErr(fmt.Sprintf("%s see end", t))
+	eval.EvalErr(fmt.Sprintf("%s configure -state disabled", t))
 }
 
-// init loads persisted configs at startup.  Called from main().
-func loadConfigsOnStartup() {
-	loadAllConfigs()
-}
+// loadConfigsOnStartup is invoked once from main() at startup.
+func loadConfigsOnStartup() { loadAllConfigs() }
+
+// voltEntries is referenced by the VoltageOut dialog handlers.  Keeping the
+// declaration at package scope so the closures inside openVoltageOutDialog
+// can call them.
+var voltEntries [8]*EntryWidget
+
+// suppress unused-symbol warning for the helper used by main.go's ticker.
+var _ = packRight
