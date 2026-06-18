@@ -312,6 +312,7 @@ func main() {
 	App.Configure(Padx(0), Pady(0), Background(bgMain))
 
 	buildUI()
+	loadConfigsOnStartup()
 
 	go modbusWorker()
 
@@ -351,14 +352,21 @@ func buildMenu() {
 	menubar.AddCascade(Lbl("Control"), Mnu(mCtrl))
 
 	mOther := menubar.Menu()
-	mOther.AddCommand(Lbl("Environmental Variables"), Command(func() {
-		openEnvVarDialog()
-	}))
-	mOther.AddSeparator()
 	mOther.AddCommand(Lbl("Version"), Command(func() {
 		openVersionDialog()
 	}))
-	mOther.AddCommand(Lbl("Quit"), ExitHandler())
+	mOther.AddCommand(Lbl("Environmental Variables"), Command(func() {
+		openEnvVarDialog()
+	}))
+	mOther.AddCommand(Lbl("Web Server Info"), Command(func() {
+		openWebServerInfoDialog()
+	}))
+	mOther.AddCommand(Lbl("Open Appdata/Log Folder"), Command(func() {
+		openAppDataFolder()
+	}))
+	mOther.AddCommand(Lbl("Open Temporary Folder"), Command(func() {
+		openTempFolder()
+	}))
 	menubar.AddCascade(Lbl("Other"), Mnu(mOther))
 
 	App.Configure(Mnu(menubar))
@@ -952,7 +960,7 @@ func flushLogs() {
 			ts := time.Now().Format("15:04:05.0")
 			line := fmt.Sprintf("%s  %s", ts, msg)
 			tkeval.EvalErr(fmt.Sprintf("%s configure -state normal", logText))
-			tkeval.EvalErr(fmt.Sprintf("%s insert end {%s\\n}", logText, line))
+			tkeval.EvalErr(fmt.Sprintf("%s insert end {%s\n}", logText, line))
 			tkeval.EvalErr(fmt.Sprintf("%s see end", logText))
 			tkeval.EvalErr(fmt.Sprintf("%s configure -state disabled", logText))
 		default:

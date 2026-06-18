@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -112,10 +114,11 @@ func makeDialogShell(title string, w, h int) (top *ToplevelWidget, body *FrameWi
 func mkRow(parent *FrameWidget, label string, width int) (row *FrameWidget, e *EntryWidget) {
 	row = parent.Frame(Background(bgPanel))
 	Pack(row, Fill(FILL_X), Side(TOP), Pady(1))
-	row.Label(
+	lbl := row.Label(
 		Txt(label), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(22), Anchor(W),
 	)
+	Pack(lbl, Side(LEFT), Padx(2))
 	e = row.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(width), Relief(SUNKEN), Borderwidth(1),
@@ -126,6 +129,16 @@ func mkRow(parent *FrameWidget, label string, width int) (row *FrameWidget, e *E
 
 func entrySet(e *EntryWidget, v any) {
 	eval.EvalErr(fmt.Sprintf("%s delete 0 end; %s insert 0 {%v}", e, e, fmt.Sprint(v)))
+}
+
+// entrySetRO writes a value into a read-only (State("disabled")) Entry widget
+// by temporarily toggling it to the normal state, mirroring the pattern used
+// by appendTextWidget for the disabled Text widget.
+func entrySetRO(e *EntryWidget, v any) {
+	s := fmt.Sprint(v)
+	eval.EvalErr(fmt.Sprintf("%s configure -state normal", e))
+	eval.EvalErr(fmt.Sprintf("%s delete 0 end; %s insert 0 {%s}", e, e, s))
+	eval.EvalErr(fmt.Sprintf("%s configure -state disabled", e))
 }
 
 func entryGet(e *EntryWidget) string {
@@ -157,12 +170,12 @@ func openCalibrationDialog() {
 	hdrTitles := []string{"x : Raw Value", "y : Physical Value", "a*x^2", "b*x", "c", "y"}
 	hdrWidths := []int{22, 22, 8, 8, 8, 8}
 	for i, t := range hdrTitles {
-		hdr.Label(
+		lbl := hdr.Label(
 			Txt(t), Font(HELVETICA, 9, BOLD),
 			Foreground(fgAccent), Background(bgPanel),
 			Width(hdrWidths[i]), Anchor(W),
 		)
-		Pack(hdr, Side(LEFT), Padx(2))
+		Pack(lbl, Side(LEFT), Padx(2))
 	}
 
 	appData.mu.RLock()
@@ -178,23 +191,23 @@ func openCalibrationDialog() {
 		row := body.Frame(Background(bgPanel))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(0))
 
-		row.Label(
+		lbl := row.Label(
 			Txt(fmt.Sprintf("%02d:%s(i16)", i, rawChNames[i])),
 			Font(HELVETICA, 8), Foreground(fgLabel),
 			Background(bgPanel), Width(22), Anchor(W),
 		)
-		Pack(row, Side(LEFT), Padx(2))
-		row.Label(
+		Pack(lbl, Side(LEFT), Padx(2))
+		lbl = row.Label(
 			Txt("-->"), Font(HELVETICA, 8), Foreground(fgDim),
 			Background(bgPanel), Width(3), Anchor(W),
 		)
-		Pack(row, Side(LEFT), Padx(2))
-		row.Label(
+		Pack(lbl, Side(LEFT), Padx(2))
+		lbl = row.Label(
 			Txt(fmt.Sprintf("%02d:%s(%s)", i, physChNames[i], physUnits[i])),
 			Font(HELVETICA, 8), Foreground(fgLabel),
 			Background(bgPanel), Width(22), Anchor(W),
 		)
-		Pack(row, Side(LEFT), Padx(2))
+		Pack(lbl, Side(LEFT), Padx(2))
 
 		aEntries[i] = row.Entry(Font("Courier", 9), Background(bgCell), Foreground(fgText),
 			Width(8), Relief(SUNKEN), Borderwidth(1))
@@ -313,14 +326,19 @@ func openVoltageOutDialog() {
 
 	head := body.Frame(Background(bgPanel))
 	Pack(head, Fill(FILL_X), Side(TOP))
-	head.Label(
+	lbl := head.Label(
 		Txt(""), Font(HELVETICA, 9), Background(bgPanel), Width(20), Anchor(W),
 	)
-	head.Label(
+	Pack(lbl, Side(LEFT), Padx(2))
+	lbl = head.Label(
 		Txt("Voltage (V)"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgAccent), Background(bgPanel), Width(12), Anchor(E),
 	)
-	Pack(head, Side(LEFT), Padx(2))
+	Pack(lbl, Side(LEFT), Padx(2))
+
+	// Local voltEntries so the dialog instances don't share a global (otherwise
+	// opening the dialog twice would cross-wire their buttons).
+	var voltEntries [8]*EntryWidget
 
 	right := body.Frame(Background(bgPanel))
 	Pack(right, Side(RIGHT), Fill(FILL_Y), Padx(4))
@@ -353,11 +371,12 @@ func openVoltageOutDialog() {
 	for i := 0; i < 8; i++ {
 		row := left.Frame(Background(bgCell))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(1))
-		row.Label(
+		lbl := row.Label(
 			Txt(fmt.Sprintf("%02d:%s", i, voltChNames[i])),
 			Font(HELVETICA, 8), Foreground(fgLabel),
 			Background(bgCell), Width(22), Anchor(W),
 		)
+		Pack(lbl, Side(LEFT), Padx(2))
 		voltEntries[i] = row.Entry(
 			Font("Courier", 9), Background(bgPanel), Foreground(fgText),
 			Width(8), Relief(SUNKEN), Borderwidth(1), Justify(RIGHT),
@@ -389,7 +408,7 @@ func onRefreshVoltage(e [8]*EntryWidget) {
 
 // ─── Specimen Data dialog ──────────────────────────────────────────────────────
 func openSpecimenDialog() {
-	top, body := makeDialogShell("Specimen Data", 620, 580)
+	top, body := makeDialogShell("Specimen Data", 760, 660)
 
 	// Apparatus group
 	appGrp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
@@ -412,6 +431,18 @@ func openSpecimenDialog() {
 	entrySet(memE, spec.MembraneE)
 	entrySet(memT, spec.MembraneT)
 	entrySet(capW, spec.CapWeight)
+	// Apparatus params are read-only (C++ ES_READONLY on the IDC_EDIT_* controls).
+	eval.EvalErr(fmt.Sprintf("%s configure -state disabled", memE))
+	eval.EvalErr(fmt.Sprintf("%s configure -state disabled", memT))
+	eval.EvalErr(fmt.Sprintf("%s configure -state disabled", capW))
+
+	// Note explaining the * marker on Volume and Area rows.
+	note := body.Label(
+		Txt(" (*: Automatically calculated)"),
+		Font(HELVETICA, 8), Foreground(fgDim),
+		Background(bgMain), Anchor(E),
+	)
+	Pack(note, Fill(FILL_X), Side(TOP), Padx(2))
 
 	// 4-column grid
 	grp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
@@ -421,12 +452,12 @@ func openSpecimenDialog() {
 	hdrs := []string{"", "Present", "Initial", "Before consol.", "After consol."}
 	widths := []int{16, 9, 9, 14, 14}
 	for i, h := range hdrs {
-		hdr.Label(
+		lbl := hdr.Label(
 			Txt(h), Font(HELVETICA, 9, BOLD),
 			Foreground(fgAccent), Background(bgPanel),
 			Width(widths[i]), Anchor(anchorForHeader(i)),
 		)
-		Pack(hdr, Side(LEFT), Padx(2))
+		Pack(lbl, Side(LEFT), Padx(2))
 	}
 
 	stages := [4]specEditorStage{}
@@ -436,23 +467,62 @@ func openSpecimenDialog() {
 	for ri, rname := range rowDefs {
 		row := grp.Frame(Background(bgPanel))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(0))
-		row.Label(
+		lbl := row.Label(
 			Txt(rname), Font(HELVETICA, 9),
 			Foreground(fgText), Background(bgPanel), Width(16), Anchor(W),
 		)
-		Pack(row, Side(LEFT))
+		Pack(lbl, Side(LEFT))
 		for si := 0; si < 4; si++ {
-			entry := row.Entry(
-				Font("Courier", 9), Background(bgCell), Foreground(fgText),
-				Width(9), Relief(SUNKEN), Borderwidth(1), Justify(RIGHT),
-			)
+			// Read-only conditions (C++ ES_READONLY):
+			//   - si == 0  : Present column
+			//   - ri == 2  : Volume row
+			//   - ri == 3  : Area row
+			ro := si == 0 || ri == 2 || ri == 3
+			var entry *EntryWidget
+			if ro {
+				entry = row.Entry(
+					Font("Courier", 9), Background(bgCell), Foreground(fgText),
+					Width(9), Relief(SUNKEN), Borderwidth(1), Justify(RIGHT),
+					State("disabled"),
+				)
+			} else {
+				entry = row.Entry(
+					Font("Courier", 9), Background(bgCell), Foreground(fgText),
+					Width(9), Relief(SUNKEN), Borderwidth(1), Justify(RIGHT),
+				)
+			}
 			entrySet(entry, stageValueByIdx(stageKeys[si], ri))
 			Pack(entry, Side(LEFT), Padx(2))
 			setSpecEditorField(&stages[si], ri, entry)
 		}
 	}
 
-	// Footer
+	// "Copy to present" buttons (C++ IDC_BUTTON_ToPresent1/2/3).
+	// Aligned with the Initial / BeforeCons / AfterCons columns; the Present
+	// column gets a blank spacer instead.
+	copyRow := grp.Frame(Background(bgPanel))
+	Pack(copyRow, Fill(FILL_X), Side(TOP), Pady(2))
+	spacerLbl := copyRow.Label(
+		Txt(""), Font(HELVETICA, 9),
+		Background(bgPanel), Width(16), Anchor(W),
+	)
+	Pack(spacerLbl, Side(LEFT))
+	presentSpacer := copyRow.Label(
+		Txt(""), Font("Courier", 9),
+		Background(bgPanel), Width(9),
+	)
+	Pack(presentSpacer, Side(LEFT), Padx(2))
+	for si := 1; si < 4; si++ {
+		idx := si
+		btn := copyRow.Button(
+			Txt("copy to present"), Font(HELVETICA, 7),
+			Background(bgBtn), Foreground(fgText), Width(14),
+			Command(func() { copyStageToPresent(&stages[idx], &stages[0]) }),
+		)
+		Pack(btn, Side(LEFT), Padx(2))
+	}
+
+	// Footer: Before/After Consolidation
 	footGrp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(footGrp, Fill(FILL_X), Side(TOP), Pady(4))
 	footLbl := footGrp.Label(
@@ -474,11 +544,28 @@ func openSpecimenDialog() {
 	Pack(beBtn, Side(LEFT), Padx(2))
 	Pack(afBtn, Side(LEFT), Padx(2))
 
+	// Descriptive text (C++ IDC_STATIC_* captions at the bottom of IDD_SpecimenData).
+	desc := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
+	Pack(desc, Fill(FILL_X), Side(TOP), Pady(4))
+	descLbl1 := desc.Label(
+		Txt("Update reference specimen size from current specimen strains."),
+		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
+		Background(bgPanel), Anchor(W), Pady(2),
+	)
+	Pack(descLbl1, Fill(FILL_X))
+	descLbl2 := desc.Label(
+		Txt("Assuming isotropic deformation (where the volumetric strain is three times the axial strain), the reference size of the specimen is updated based on the PRESENT axial displacement data."),
+		Font(HELVETICA, 8), Foreground(fgText),
+		Background(bgPanel), Anchor(W), Pady(2),
+	)
+	Pack(descLbl2, Fill(FILL_X))
+
 	footRow2 := body.Frame(Background(bgPanel))
 	Pack(footRow2, Fill(FILL_X), Side(TOP), Pady(2))
 	updateBtn := footRow2.Button(
 		Txt("Update Params"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText), Width(14),
+		State("disabled"),
 		Command(func() { onUpdateSpecimen(memE, memT, capW, stages) }),
 	)
 	saveBtn := footRow2.Button(
@@ -543,6 +630,24 @@ func setSpecEditorField(s *specEditorStage, idx int, e *EntryWidget) {
 	case 5:
 		s.ldt2 = e
 	}
+}
+
+// copyStageToPresent copies Diameter/Height/LDT1/LDT2 from src into the
+// Present stage (which is read-only) and recomputes Present's Volume and
+// Area from the new Diameter/Height using the standard cylinder formulas:
+//   Area   = π · D² / 4
+//   Volume = Area · H
+func copyStageToPresent(src, dst *specEditorStage) {
+	d := entryGetFloat(src.diameter)
+	h := entryGetFloat(src.height)
+	entrySetRO(dst.diameter, d)
+	entrySetRO(dst.height, h)
+	entrySetRO(dst.ldt1, entryGetFloat(src.ldt1))
+	entrySetRO(dst.ldt2, entryGetFloat(src.ldt2))
+	area := math.Pi * d * d / 4.0
+	volume := area * h
+	entrySetRO(dst.area, area)
+	entrySetRO(dst.volume, volume)
 }
 
 func onUpdateSpecimen(memE, memT, capW *EntryWidget, stages [4]specEditorStage) {
@@ -626,29 +731,30 @@ func openStepCtrlDialog() {
 	// Header: read-only step/control no + checkbox + <-> arrows
 	topRow := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(topRow, Fill(FILL_X), Side(TOP), Pady(2))
-	topRow.Label(
+	lbl := topRow.Label(
 		Txt(" Step Control"),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(3),
 	)
-	Pack(topRow, Fill(FILL_X))
+	Pack(lbl, Fill(FILL_X))
 
 	ctrlRow := body.Frame(Background(bgPanel))
 	Pack(ctrlRow, Fill(FILL_X), Side(TOP), Pady(1))
-	ctrlRow.Label(
+	lbl = ctrlRow.Label(
 		Txt("Current Step No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(16), Anchor(W),
 	)
+	Pack(lbl, Side(LEFT), Padx(2))
 	stepEntry := ctrlRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(8), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(stepEntry, Side(LEFT), Padx(4))
-	ctrlRow.Label(
+	lbl = ctrlRow.Label(
 		Txt("Current Control No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(18), Anchor(W),
 	)
-	Pack(ctrlRow, Side(LEFT), Padx(8))
+	Pack(lbl, Side(LEFT), Padx(2))
 	ctrlEntry := ctrlRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(8), Relief(SUNKEN), Borderwidth(1),
@@ -675,29 +781,30 @@ func openStepCtrlDialog() {
 	// Editable
 	editRow := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(editRow, Fill(FILL_X), Side(TOP), Pady(2))
-	editRow.Label(
+	lbl = editRow.Label(
 		Txt(" Control Arguments"),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(3),
 	)
-	Pack(editRow, Fill(FILL_X))
+	Pack(lbl, Fill(FILL_X))
 
 	idxRow := editRow.Frame(Background(bgPanel))
 	Pack(idxRow, Fill(FILL_X), Side(TOP), Pady(1))
-	idxRow.Label(
+	lbl = idxRow.Label(
 		Txt("Step No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(8), Anchor(W),
 	)
+	Pack(lbl, Side(LEFT), Padx(2))
 	editStep := idxRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(6), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(editStep, Side(LEFT), Padx(2))
-	idxRow.Label(
+	lbl = idxRow.Label(
 		Txt("Control No."), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(10), Anchor(W),
 	)
-	Pack(idxRow, Side(LEFT))
+	Pack(lbl, Side(LEFT), Padx(2))
 	editCtrl := idxRow.Entry(
 		Font("Courier", 9), Background(bgCell), Foreground(fgText),
 		Width(6), Relief(SUNKEN), Borderwidth(1),
@@ -732,10 +839,11 @@ func openStepCtrlDialog() {
 	argVals := appData.stepCtrl.Args
 	appData.mu.RUnlock()
 	for i := 0; i < 16; i++ {
-		argRow.Label(
+		lbl := argRow.Label(
 			Txt(fmt.Sprintf("Args[%02d]", i)), Font(HELVETICA, 7),
 			Foreground(fgDim), Background(bgPanel), Width(6), Anchor(W),
 		)
+		Pack(lbl, Side(LEFT), Padx(1))
 		args[i] = argRow.Entry(
 			Font("Courier", 8), Background(bgCell), Foreground(fgText),
 			Width(5), Relief(SUNKEN), Borderwidth(1),
@@ -823,11 +931,11 @@ func openEnvVarDialog() {
 	hdr := body.Frame(Background(bgPanel))
 	Pack(hdr, Fill(FILL_X), Side(TOP), Pady(2))
 	for _, h := range []string{"Name", "Current", "Value", ""} {
-		hdr.Label(
+		lbl := hdr.Label(
 			Txt(h), Font(HELVETICA, 9, BOLD),
 			Foreground(fgAccent), Background(bgPanel), Width(20), Anchor(W),
 		)
-		Pack(hdr, Side(LEFT), Padx(2))
+		Pack(lbl, Side(LEFT), Padx(2))
 	}
 
 	appData.mu.RLock()
@@ -838,15 +946,16 @@ func openEnvVarDialog() {
 	for i := 0; i < 16; i++ {
 		row := body.Frame(Background(bgPanel))
 		Pack(row, Fill(FILL_X), Side(TOP), Pady(0))
-		row.Label(
+		lbl := row.Label(
 			Txt(env.Names[i]), Font(HELVETICA, 8),
 			Foreground(fgLabel), Background(bgPanel), Width(30), Anchor(W),
 		)
-		row.Label(
+		Pack(lbl, Side(LEFT), Padx(2))
+		lbl = row.Label(
 			Txt(fmt.Sprintf("%g", env.Values[i])), Font(HELVETICA, 8),
 			Foreground(fgDim), Background(bgPanel), Width(12), Anchor(W),
 		)
-		Pack(row, Side(LEFT), Padx(2))
+		Pack(lbl, Side(LEFT), Padx(2))
 		entries[i] = row.Entry(
 			Font("Courier", 9), Background(bgCell), Foreground(fgText),
 			Width(10), Relief(SUNKEN), Borderwidth(1),
@@ -895,18 +1004,69 @@ func openEnvVarDialog() {
 	Pack(closeBtn, Side(RIGHT), Padx(2))
 }
 
+// ─── Web Server Info dialog ────────────────────────────────────────────────────
+func openWebServerInfoDialog() {
+	top, body := makeDialogShell("Web Server Info", 460, 220)
+
+	hdr := body.Frame(Background(bgPanel))
+	Pack(hdr, Fill(FILL_X), Side(TOP), Pady(4))
+	lbl := hdr.Label(
+		Txt("Web Server Info"),
+		Font(HELVETICA, 11, BOLD), Foreground(fgAccent),
+		Background(bgPanel), Anchor(W),
+	)
+	Pack(lbl, Side(LEFT), Padx(8))
+	okBtn := hdr.Button(
+		Txt("OK"), Font(HELVETICA, 9, BOLD),
+		Background(bgBtn), Foreground(fgText), Width(8),
+		Command(func() { Destroy(top) }),
+	)
+	Pack(okBtn, Side(RIGHT), Padx(8))
+
+	txt := body.Text(
+		Font("Courier", 9), Background(bgCell), Foreground(fgText),
+		Height(10), Wrap("word"), State("disabled"),
+	)
+	Pack(txt, Fill(FILL_BOTH), Expand(true), Pady(4))
+	appendTextWidget(txt, "Web Server Info not implemented")
+}
+
+// ─── Open Appdata / Log Folder ─────────────────────────────────────────────────
+func openAppDataFolder() {
+	dir := configDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		appendLog("[folder] mkdir failed: " + err.Error())
+		return
+	}
+	if err := exec.Command("explorer", dir).Start(); err != nil {
+		appendLog("[folder] open appdata failed: " + err.Error())
+		return
+	}
+	appendLog("[folder] opened " + dir)
+}
+
+// ─── Open Temporary Folder ─────────────────────────────────────────────────────
+func openTempFolder() {
+	dir := os.TempDir()
+	if err := exec.Command("explorer", dir).Start(); err != nil {
+		appendLog("[folder] open temp failed: " + err.Error())
+		return
+	}
+	appendLog("[folder] opened " + dir)
+}
+
 // ─── Version dialog ───────────────────────────────────────────────────────────
 func openVersionDialog() {
 	top, body := makeDialogShell("DigitShowGo", 480, 380)
 
 	row := body.Frame(Background(bgPanel))
 	Pack(row, Fill(FILL_X), Side(TOP), Pady(4))
-	row.Label(
+	lbl := row.Label(
 		Txt("DigitShowGo Information"),
 		Font(HELVETICA, 11, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W),
 	)
-	Pack(row, Side(LEFT), Padx(8))
+	Pack(lbl, Side(LEFT), Padx(8))
 	okBtn := row.Button(
 		Txt("OK"), Font(HELVETICA, 9, BOLD),
 		Background(bgBtn), Foreground(fgText), Width(8),
@@ -967,11 +1127,6 @@ func appendTextWidget(t *TextWidget, s string) {
 
 // loadConfigsOnStartup is invoked once from main() at startup.
 func loadConfigsOnStartup() { loadAllConfigs() }
-
-// voltEntries is referenced by the VoltageOut dialog handlers.  Keeping the
-// declaration at package scope so the closures inside openVoltageOutDialog
-// can call them.
-var voltEntries [8]*EntryWidget
 
 // suppress unused-symbol warning for the helper used by main.go's ticker.
 var _ = packRight
