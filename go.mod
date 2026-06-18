@@ -1,4 +1,4 @@
-module helloworld
+module dsgo
 
 go 1.26.2
 
