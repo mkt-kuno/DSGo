@@ -2,4 +2,7 @@ stderr.log
 stdout.log
 temp/
 *.tmp
+dsgo.exe
+*.exe
+
 
