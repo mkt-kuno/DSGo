@@ -521,7 +521,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 	portGr := makeGroup(parent, "Port")
 	portRow := portGr.Frame(Background(bgPanel))
 	Pack(portRow, Fill(FILL_X), Side(TOP))
-	portRow.Label(
+	statusLbl := portRow.Label(
 		Txt("Status"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -533,6 +533,8 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("Reconnect"), Font(HELVETICA, 8),
 		Width(8), Command(func() { requestReconnect() }),
 	)
+	Pack(statusLbl, Side(LEFT))
+	Pack(portStatusLbl, Side(LEFT), Padx(2))
 	Pack(reconnectBtn, Side(LEFT), Padx(4))
 
 	// Basic Settings group
@@ -543,7 +545,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 	// ControlType row
 	row1 := bs.Frame(Background(bgPanel))
 	Pack(row1, Fill(FILL_X), Side(TOP))
-	row1.Label(
+	ctrlTypeLbl := row1.Label(
 		Txt("ControlType"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -557,13 +559,14 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("Apply"), Font(HELVETICA, 8),
 		Width(6), Command(func() { onApplyCtrlType() }),
 	)
+	Pack(ctrlTypeLbl, Side(LEFT))
 	Pack(comboCtrlType, Side(LEFT))
 	Pack(apply1, Side(LEFT), Padx(2))
 
 	// SamplingTime row
 	row2 := bs.Frame(Background(bgPanel))
 	Pack(row2, Fill(FILL_X), Side(TOP))
-	row2.Label(
+	sampTimeLbl := row2.Label(
 		Txt("SamplingTime"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -577,6 +580,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("Apply"), Font(HELVETICA, 8),
 		Width(6), Command(func() { onApplySampTime() }),
 	)
+	Pack(sampTimeLbl, Side(LEFT))
 	Pack(comboSampTime, Side(LEFT))
 	Pack(apply2, Side(LEFT), Padx(2))
 
@@ -588,7 +592,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 	mkRow := func(label string, lblRef **LabelWidget, init string) {
 		r := cs.Frame(Background(bgPanel))
 		Pack(r, Fill(FILL_X), Side(TOP))
-		r.Label(
+		lbl := r.Label(
 			Txt(label), Font(HELVETICA, 9),
 			Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 		)
@@ -596,6 +600,8 @@ func buildSettingsPanel(parent *FrameWidget) {
 			Txt(init), Font(HELVETICA, 9, BOLD),
 			Foreground(fgGreen), Background(bgPanel), Anchor(W),
 		)
+		Pack(lbl, Side(LEFT))
+		Pack(*lblRef, Side(LEFT), Padx(2))
 	}
 	mkRow("ControlType", &ctrlTypeCurLbl, "00:None")
 	mkRow("SamplingTime", &sampTimeCurLbl, "1")
@@ -607,7 +613,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 
 	scRow1 := sc.Frame(Background(bgPanel))
 	Pack(scRow1, Fill(FILL_X), Side(TOP))
-	scRow1.Label(
+	stepNoHdr := scRow1.Label(
 		Txt("Step No"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -615,10 +621,12 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("0"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgGreen), Background(bgPanel), Anchor(W),
 	)
+	Pack(stepNoHdr, Side(LEFT))
+	Pack(stepNoLbl, Side(LEFT), Padx(2))
 
 	scRow2 := sc.Frame(Background(bgPanel))
 	Pack(scRow2, Fill(FILL_X), Side(TOP))
-	scRow2.Label(
+	ctrlNoHdr := scRow2.Label(
 		Txt("Control No"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -626,10 +634,12 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("0"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgGreen), Background(bgPanel), Anchor(W),
 	)
+	Pack(ctrlNoHdr, Side(LEFT))
+	Pack(ctrlNoLbl, Side(LEFT), Padx(2))
 
 	scRow3 := sc.Frame(Background(bgPanel))
 	Pack(scRow3, Fill(FILL_X), Side(TOP))
-	scRow3.Label(
+	elapsedHdr := scRow3.Label(
 		Txt("Elapsed"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -637,10 +647,12 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("0 [s]"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgGreen), Background(bgPanel), Anchor(W),
 	)
+	Pack(elapsedHdr, Side(LEFT))
+	Pack(elapsedLbl, Side(LEFT), Padx(2))
 
 	scRow4 := sc.Frame(Background(bgPanel))
 	Pack(scRow4, Fill(FILL_X), Side(TOP))
-	scRow4.Label(
+	cyclicNoHdr := scRow4.Label(
 		Txt("Cyclic No"), Font(HELVETICA, 9),
 		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
 	)
@@ -648,6 +660,8 @@ func buildSettingsPanel(parent *FrameWidget) {
 		Txt("0"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgGreen), Background(bgPanel), Anchor(W),
 	)
+	Pack(cyclicNoHdr, Side(LEFT))
+	Pack(cyclicNoLbl, Side(LEFT), Padx(2))
 
 	// Start/Stop buttons in 2 rows
 	btnGr := makeGroup(parent, "")
@@ -709,7 +723,7 @@ func buildCenterPanel(parent *FrameWidget) {
 	// Mode indicator
 	modeRow := gr.Frame(Background(bgPanel))
 	Pack(modeRow, Fill(FILL_X), Side(TOP), Pady(2))
-	modeRow.Label(
+	modeHdr := modeRow.Label(
 		Txt("Mode:"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgText), Background(bgPanel), Anchor(W),
 	)
@@ -717,11 +731,13 @@ func buildCenterPanel(parent *FrameWidget) {
 		Txt("None"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgGreen), Background(bgPanel), Anchor(W),
 	)
+	Pack(modeHdr, Side(LEFT))
+	Pack(modeLbl, Side(LEFT), Padx(2))
 
 	// Save filename + elapsed
 	saveRow := gr.Frame(Background(bgPanel))
 	Pack(saveRow, Fill(FILL_X), Side(TOP), Pady(2))
-	saveRow.Label(
+	saveFileHdr := saveRow.Label(
 		Txt("Save: Filename"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgText), Background(bgPanel), Anchor(W),
 	)
@@ -734,6 +750,9 @@ func buildCenterPanel(parent *FrameWidget) {
 		Txt("0 [sec]"), Font(HELVETICA, 9, BOLD),
 		Foreground(fgOrange), Background(bgPanel), Anchor(E),
 	)
+	Pack(saveFileHdr, Side(LEFT))
+	Pack(saveFileLbl, Side(LEFT), Padx(2), Expand(true), Fill(FILL_X))
+	Pack(saveElapsedLbl, Side(LEFT), Padx(2))
 
 	appendLog("DigitShowGo started.")
 }
