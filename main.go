@@ -205,7 +205,6 @@ var (
 	paramValLbls  [32]*LabelWidget
 	voltValLbls   [8]*LabelWidget
 	portStatusLbl *LabelWidget
-	_             = portStatusLbl // suppress unused warning
 
 	modeLbl        *LabelWidget
 	saveElapsedLbl *LabelWidget
@@ -233,8 +232,6 @@ var (
 	comboYAxisB    *TComboboxWidget
 	comboTargetB   *TComboboxWidget
 
-	plotCanvasA *CanvasWidget
-	plotCanvasB *CanvasWidget
 	plotA       *miniChart
 	plotB       *miniChart
 

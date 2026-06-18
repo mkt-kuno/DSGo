@@ -175,6 +175,7 @@ func openCalibrationDialog() {
 
 	appData.mu.RLock()
 	cal := appData.cal
+	phys := appData.phys
 	appData.mu.RUnlock()
 
 	aEntries := [16]*EntryWidget{}
@@ -215,7 +216,7 @@ func openCalibrationDialog() {
 		entrySet(aEntries[i], cal[i].A)
 		entrySet(bEntries[i], cal[i].B)
 		entrySet(cEntries[i], cal[i].C)
-		entrySet(yEntries[i], 0)
+		entrySet(yEntries[i], phys[i])
 		Pack(aEntries[i], Side(LEFT), Padx(1))
 		Pack(bEntries[i], Side(LEFT), Padx(1))
 		Pack(cEntries[i], Side(LEFT), Padx(1))
@@ -311,7 +312,7 @@ func onZeroCalibration(idx int, a, b, c, y [16]*EntryWidget) {
 	appData.cal[idx].C = newC
 	appData.mu.Unlock()
 	entrySet(c[idx], newC)
-	_ = y
+	entrySet(y[idx], 0)
 	appendLog(fmt.Sprintf("[calib] zero CH%02d: c <- %.6f", idx, newC))
 }
 
@@ -379,7 +380,6 @@ func openVoltageOutDialog() {
 		entrySet(voltEntries[i], volts[i])
 		Pack(voltEntries[i], Side(LEFT), Padx(4))
 	}
-	_ = volts
 }
 
 func onOutputVoltage(e [8]*EntryWidget) {
@@ -655,12 +655,18 @@ func onUpdateSpecimen(memE, memT, capW *EntryWidget, stages [4]specEditorStage) 
 		&appData.specimen.BeforeCons, &appData.specimen.AfterCons,
 	}
 	for i, s := range stages {
-		keys[i].Diameter = entryGetFloat(s.diameter)
-		keys[i].Height = entryGetFloat(s.height)
-		keys[i].Volume = entryGetFloat(s.volume)
-		keys[i].Area = entryGetFloat(s.area)
+		d := entryGetFloat(s.diameter)
+		h := entryGetFloat(s.height)
+		area := math.Pi * d * d / 4.0
+		volume := area * h
+		keys[i].Diameter = d
+		keys[i].Height = h
+		keys[i].Area = area
+		keys[i].Volume = volume
 		keys[i].LDT1 = entryGetFloat(s.ldt1)
 		keys[i].LDT2 = entryGetFloat(s.ldt2)
+		entrySetRO(s.area, area)
+		entrySetRO(s.volume, volume)
 	}
 	snap := appData.specimen
 	appData.mu.Unlock()
@@ -757,19 +763,32 @@ func openStepCtrlDialog() {
 		State("disabled"),
 	)
 	Pack(ctrlEntry, Side(LEFT), Padx(4))
+	var decBtn, incBtn *ButtonWidget
+	changeEnabled := false
 	changeChk := ctrlRow.Checkbutton(
 		Txt("ChangeNo"), Font(HELVETICA, 9),
 		Background(bgPanel), Foreground(fgText),
+		Command(func() {
+			changeEnabled = !changeEnabled
+			st := State("normal")
+			if !changeEnabled {
+				st = State("disabled")
+			}
+			decBtn.Configure(st)
+			incBtn.Configure(st)
+		}),
 	)
 	Pack(changeChk, Side(LEFT), Padx(4))
-	decBtn := ctrlRow.Button(
+	decBtn = ctrlRow.Button(
 		Txt("<-"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(4),
+		State("disabled"),
 		Command(func() { appendLog("[step] step-- (no-op stub)") }),
 	)
-	incBtn := ctrlRow.Button(
+	incBtn = ctrlRow.Button(
 		Txt("->"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(4),
+		State("disabled"),
 		Command(func() { appendLog("[step] step++ (no-op stub)") }),
 	)
 	Pack(decBtn, Side(LEFT), Padx(2))
@@ -812,6 +831,7 @@ func openStepCtrlDialog() {
 		Background(bgBtn), Foreground(fgText), Width(8),
 		Command(func() { appendLog("[step] Load (no-op stub)") }),
 	)
+	var args [16]*EntryWidget
 	updArgs := idxRow.Button(
 		Txt("Update"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
@@ -819,6 +839,9 @@ func openStepCtrlDialog() {
 			appData.mu.Lock()
 			appData.stepCtrl.StepNo = entryGetInt(editStep)
 			appData.stepCtrl.ControlNo = entryGetInt(editCtrl)
+			for i := 0; i < 16; i++ {
+				appData.stepCtrl.Args[i] = entryGetFloat(args[i])
+			}
 			snap := appData.stepCtrl
 			appData.mu.Unlock()
 			_ = saveJSON("stepctrl.json", stepCtrlFile{Step: snap})
@@ -831,7 +854,6 @@ func openStepCtrlDialog() {
 	// 16 Args entries
 	argRow := editRow.Frame(Background(bgPanel))
 	Pack(argRow, Fill(FILL_X), Side(TOP), Pady(1))
-	args := [16]*EntryWidget{}
 	appData.mu.RLock()
 	argVals := appData.stepCtrl.Args
 	appData.mu.RUnlock()
