@@ -46,7 +46,7 @@ func saveJSON(name string, v any) error {
 
 type calibrationFile struct{ Cal [16]CalCoeff `json:"cal"` }
 type specimenFile struct{ Specimen SpecimenData `json:"specimen"` }
-type preConFile struct{ PreCon PreConParams `json:"preCon"` }
+type preConFile struct{ PreCon PreConParams `json:"precon"` }
 type envVarsFile struct{ Env EnvVars `json:"env"` }
 
 // ─── Step Control on-disk format (DigitShowModbus.h:46-47) ───────────────────
@@ -179,17 +179,6 @@ func clampStepNo(n int) int {
 		return dsmStepCtrlMax - 1
 	}
 	return n
-}
-
-func saveAllConfigs() {
-	ensureConfigDir()
-	appData.mu.RLock()
-	_ = saveJSON("calibration.json", calibrationFile{Cal: appData.cal})
-	_ = saveJSON("specimen.json", specimenFile{Specimen: appData.specimen})
-	_ = saveJSON("precon.json", preConFile{PreCon: appData.preCon})
-	_ = saveStepCtrlJSON(&appData.stepCtrl)
-	_ = saveJSON("envvars.json", envVarsFile{Env: appData.envVars})
-	appData.mu.RUnlock()
 }
 
 func loadAllConfigs() {
@@ -598,9 +587,15 @@ func openSpecimenDialog() {
 	)
 	Pack(note, Fill(FILL_X), Side(TOP), Padx(2))
 
-	// 4-column grid
+	// 4-column grid (C++ GROUPBOX "Input Specimen's Data")
 	grp := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(grp, Fill(FILL_BOTH), Expand(true), Side(TOP), Pady(4))
+	grpLbl := grp.Label(
+		Txt(" Input Specimen's Data"),
+		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
+		Background(bgPanel), Anchor(W), Pady(2),
+	)
+	Pack(grpLbl, Fill(FILL_X))
 	hdr := grp.Frame(Background(bgPanel))
 	Pack(hdr, Fill(FILL_X), Side(TOP), Pady(2))
 	hdrs := []string{"", "Present", "Initial", "Before consol.", "After consol."}
@@ -702,7 +697,7 @@ func openSpecimenDialog() {
 	desc := body.Frame(Background(bgPanel), Relief(SUNKEN), Borderwidth(1))
 	Pack(desc, Fill(FILL_X), Side(TOP), Pady(4))
 	descLbl1 := desc.Label(
-		Txt("Update reference specimen size from current specimen strains."),
+		Txt("Update reference specimen size from PRESENT specimen strains."),
 		Font(HELVETICA, 9, BOLD), Foreground(fgAccent),
 		Background(bgPanel), Anchor(W), Pady(2),
 	)
@@ -1297,14 +1292,22 @@ func openStepCtrlDialog() {
 	entrySet(editCtrl, editCtrlStart)
 }
 
-const stepCtrlHelp = `Control No.  Unit: Stress (kPa), Stress_rate (kPa/min), Motor_Speed (RPM), Strain (%), Time (min)
-0: Stop
-1: Monotonic Axial Loading  ([0] 0:compression/1:extension, [1] motor_speed, [2] eff_rad_stress*, [3] enable_axial_strain_limiter?, [4] axial_strain_limit, [5] enable_q_limiter?, [6] q_limit)
-2: Cyclic Axial Loading Between Specified STRESS Limits
-3: Cyclic Axial Loading Between Specified STRAIN Limits
-4: Creep  ([0] q, [1] q_error_at_max_motor_speed, [2] max_motor_speed, [3] duration_time, [4] eff_rad_stress*)
-5: Linear Stress Path Loading
-* Effective radial stress is controlled only when a POSITIVE value is entered.`
+const stepCtrlHelp = `Unit: Stress (kPa), Stress_rate (kPa/min), Motor_Speed (RPM), Strain (%), Time (min)
+
+  0: Stop ([0] 0:do_nothing/1:motor_off, [1] 0:do_nothing/1:motor_up, [2] 0:do_nothing/1:motor_speed_zero, [3] 0:do_nothing/1:ep_cell_zero, [4] 0:do_nothing/1:ep_axis_zero)
+
+  1: Monotonic Axial Loading ( [0] 0:compression/1:extension, [1] motor_speed, [2] eff_rad_stress*, [3] enable_axial_strain_limiter?(Disable:0/Enable:1), [4] axial_strain_limit, [5] enable_q_limiter?(Disable:0/Enable:1), [6] q_limit )
+
+  2: Cyclic Axial Loading Between Specified STRESS Limits ( [0] 0:compression/1:extension, [1] motor_speed, [2] q_lower_limit, [3] q_upper_limit, [4] cycle_number, [5] eff_rad_stress* )
+
+  3: Cyclic Axial Loading Between Specified STRAIN Limits ( [0] 0:compression/1:extension, [1] motor_speed, [2] axial_strain_lower_limit, [3] axial_strain_upper_limit, [4] cycle_number, [5] eff_rad_stress* )
+
+  4: Creep ( [0] q, [1] q_error_at_max_motor_speed, [2] max_motor_speed, [3] duration_time, [4] eff_rad_stress* )
+
+  5: Linear Stress Path Loading ( [0] ini_eff_axial_stress, [1] ini_eff_rad_stress, [2] end_eff_axial_stress, [3] end_eff_rad_stress, [4] cell_pressure_rate, [5] eff_axial_stress_error_at_max_motor_speed, [6] max_motor_speed )
+
+  * Effective radial stress is controlled only when a POSITIVE value is entered.
+`
 
 // ─── Environmental Variables dialog ────────────────────────────────────────────
 func openEnvVarDialog() {
@@ -1371,7 +1374,6 @@ func openEnvVarDialog() {
 		)
 		Pack(upBtn, Side(LEFT), Padx(2))
 	}
-	_ = acceptChk // Accept Risks toggle is purely visual in this stub.
 
 	foot := body.Frame(Background(bgPanel))
 	Pack(foot, Fill(FILL_X), Side(TOP), Pady(4))

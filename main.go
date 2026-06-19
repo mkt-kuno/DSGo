@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	. "modernc.org/tk9.0"
@@ -127,38 +126,57 @@ var plotTargetChoices = []string{"Raw", "Phy", "Par"}
 // to keep the on-disk JSON schema simple.  For AO, only A and B are used
 // (matches the C++ DigitShowModbus.h:250-253 AO struct which has no C
 // term); C is always 0 there.  See AOutCal docstring on AppData.
-type CalCoeff struct{ A, B, C float64 }
+//
+// JSON tags are lowercase (`a`, `b`, `c`) to match the on-disk format
+// written by DigitShowModbus's nlohmann::json serialiser
+// (Dialog_CalibrationValue.cpp:193-195, Utils_Various.cpp:97-99, 148-150).
+type CalCoeff struct {
+	A float64 `json:"a"`
+	B float64 `json:"b"`
+	C float64 `json:"c"`
+}
 
-// Specimen stage: Initial / Present / Before / After consolidation
+// Specimen stage: Initial / Present / Before / After consolidation.
+//
+// JSON tags match Dialog_Specimen.cpp:261-287 (height/area/volume/diameter/
+// ldt_1/ldt_2).  The Go field names stay exported; the on-disk keys are
+// lowercase to match what `j["present"]["diameter"] = ...` writes in C++.
 type SpecimenStage struct {
-	Diameter float64 // mm
-	Height   float64 // mm
-	Area     float64 // mm2 (computed)
-	Volume   float64 // mm3 (computed)
-	LDT1     float64 // mm
-	LDT2     float64 // mm
+	Diameter float64 `json:"diameter"`
+	Height   float64 `json:"height"`
+	Area     float64 `json:"area"`
+	Volume   float64 `json:"volume"`
+	LDT1     float64 `json:"ldt_1"`
+	LDT2     float64 `json:"ldt_2"`
 }
 
 type SpecimenData struct {
-	MembraneE  float64 // kPa
-	MembraneT  float64 // mm
-	CapWeight  float64 // N
-	Present    SpecimenStage
-	Initial    SpecimenStage
-	BeforeCons SpecimenStage
-	AfterCons  SpecimenStage
+	MembraneE  float64       `json:"membrane_youngs_modulus"`
+	MembraneT  float64       `json:"membrane_thickness"`
+	CapWeight  float64       `json:"cap_weight"`
+	Present    SpecimenStage `json:"present"`
+	Initial    SpecimenStage `json:"initial"`
+	BeforeCons SpecimenStage `json:"before"`
+	AfterCons  SpecimenStage `json:"after"`
 }
 
-// PreConsolidation control parameters
+// PreConsolidation control parameters.
+// JSON keys (`target`, `error`, `motor_speed`) match the DigitShowModbus
+// context names (Context::Control::PreConsolication in DigitShowModbus.h).
+// Note: the C++ side does not serialise PreCon to JSON; the lowercase tags
+// are used for consistency with the rest of the on-disk schema.
 type PreConParams struct {
-	TargetQ   float64 // kPa
-	QError    float64 // kPa
-	MaxSpeed  float64 // rpm
+	TargetQ  float64 `json:"target"`
+	QError   float64 `json:"error"`
+	MaxSpeed float64 `json:"motor_speed"`
 }
 
 // Step Control
 // Mirrors the C++ Step[DSM_STEPCTRL_STEP_MAX] table in DigitShowModbus.h:46-47
 // with DSM_STEPCTRL_STEP_MAX = 1024 and DSM_STEPCTRL_ARGS_MAX = 16.
+// The on-disk JSON is handled by the stepCtrlFile wrapper in dialogs.go,
+// whose stepCtrlFileEntry already uses lowercase `ctrl` / `args00..args15`
+// tags matching Dialog_StepCtrl.cpp:197-205.
 type StepCtrl struct {
 	CurrentStepNo int               // runtime: which row the motor loop is executing
 	EditStepNo    int               // editable: which row the dialog is editing
@@ -168,9 +186,11 @@ type StepCtrl struct {
 }
 
 // Env variables (read from / written to os.Environ on Apply)
+// JSON keys (`values`, `names`) are lowercase for consistency with the rest
+// of the on-disk schema; C++ does not serialise envvars to JSON.
 type EnvVars struct {
-	Values [16]float64
-	Names  [16]string
+	Values [16]float64 `json:"values"`
+	Names  [16]string  `json:"names"`
 }
 
 type AppData struct {
@@ -915,19 +935,6 @@ func buildPlotPanel(parent *FrameWidget) {
 }
 
 // ─── Control button handlers ──────────────────────────────────────────────────
-// reconnectCh is a thread-safe flag the worker can observe to drop its port and
-// re-probe.  We avoid a Go channel/select here because the worker is on its own
-// goroutine and we just want a one-shot hint.
-var reconnectRequested atomic.Bool
-
-func requestReconnect() {
-	reconnectRequested.Store(true)
-	appendLog("[ui] reconnect requested by user")
-}
-
-func consumeReconnect() bool {
-	return reconnectRequested.Swap(false)
-}
 
 func onStartControl() {
 	appData.mu.Lock()
@@ -1158,11 +1165,10 @@ func updateUI() {
 }
 
 // ─── Background Modbus / simulation worker ────────────────────────────────────
-// Single loop with a `sim` flag - `consumeReconnect()` is checked on every
-// iteration so the user can hot-swap between a real port and simulation mode
-// without us having to exit and respawn the goroutine.  The previous design
-// had a separate `simLoop()` that was an unbounded `for {}` and silently
-// dropped the Reconnect request once the worker entered it.
+// Single loop with a `sim` flag that automatically re-probes the serial port
+// after a burst of read errors.  The previous design had a separate
+// `simLoop()` that was an unbounded `for {}` and silently dropped the
+// Reconnect request once the worker entered it.
 func modbusWorker() {
 	appendLog(fmt.Sprintf("[worker] probing serial ports (preferred: %s)...", preferredPort))
 	port, portName := findPort()
@@ -1186,28 +1192,6 @@ func modbusWorker() {
 	tick := 0
 
 	for {
-		if consumeReconnect() {
-			if sim {
-				appendLog("[worker] reconnect requested (was in sim mode)")
-			} else {
-				appendLog("[modbus] user-requested reconnect")
-				port.Close()
-			}
-			time.Sleep(200 * time.Millisecond)
-			port, portName = findPort()
-			sim = port == nil
-			consecutiveErrors = 0
-			appData.mu.Lock()
-			appData.simMode = sim
-			if sim {
-				appData.portStr = "SIM (reconnect)"
-			} else {
-				appData.portStr = portName
-			}
-			appData.mu.Unlock()
-			continue
-		}
-
 		// Process any pending AO write request from the UI thread.  We do
 		// this BEFORE the FC04 read so a write is serviced within ~one
 		// tick of the user's "Output" click.  In sim mode we just log

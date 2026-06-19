@@ -59,9 +59,11 @@ following are documented intentional deviations:
    `ChartCtrl` library.  See TODOs in README.md for the
    `Plot (Chart + LMDB?)` upgrade.
 
-3. **Single Modbus FC04 polling loop** at 100 ms, with
-   `reconnectRequested atomic.Bool` for user-triggered reconnects.
-   The C++ version's `ShdController` and `SnapshotBuffer` machinery is
+3. **Single Modbus FC04 polling loop** at 100 ms, with automatic
+   re-probing after 50 consecutive read errors.  There is no
+   user-triggered Reconnect button (the C++ side had a
+   `ShutdownBlockReasonCreate` UI flow we don't reproduce).  The
+   C++ version's `ShdController` and `SnapshotBuffer` machinery is
    not ported - the Go worker simply overwrites `appData.raw/phys/params`.
 
 4. **`computePhys` ignores raw zero-point** unless the calibration
@@ -153,4 +155,3 @@ priority for further development:
   `appData.mu` (RWMutex).
 - Log messages from the worker go through `appendLog` -> buffered
   channel -> flushed in the main-thread `updateUI` ticker.
-- `requestReconnect` uses `atomic.Bool` to avoid race with the worker.
