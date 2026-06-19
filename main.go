@@ -472,14 +472,19 @@ func buildBody(parent *FrameWidget) {
 }
 
 func buildBottomRow(parent *FrameWidget) {
-	// Bottom row: Plot (left) | Center spdlog+Mode+Save (middle) | Settings (right)
+	// Bottom row: Plot (left, fixed) | Center spdlog+Mode+Save (middle, expands) | Settings (right, fixed)
 	plotCol := parent.Frame(Background(bgPanel))
 	centerCol := parent.Frame(Background(bgPanel))
 	settingsCol := parent.Frame(Background(bgPanel))
 
-	Pack(plotCol, Side(LEFT), Fill(FILL_BOTH), Expand(true), Padx(2))
-	Pack(centerCol, Side(LEFT), Fill(FILL_Y), Padx(2))
-	Pack(settingsCol, Side(LEFT), Fill(FILL_Y), Padx(2))
+	GridColumnConfigure(parent, 0, Weight(0), Minsize(480))
+	GridColumnConfigure(parent, 1, Weight(1))
+	GridColumnConfigure(parent, 2, Weight(0), Minsize(240))
+	GridRowConfigure(parent, 0, Weight(1))
+
+	Grid(plotCol, In(parent), Row(0), Column(0), Sticky("nsew"))
+	Grid(centerCol, In(parent), Row(0), Column(1), Sticky("nsew"), Padx(2))
+	Grid(settingsCol, In(parent), Row(0), Column(2), Sticky("nsew"), Padx(2))
 
 	buildPlotPanel(plotCol)
 	buildCenterPanel(centerCol)
