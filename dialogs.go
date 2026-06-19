@@ -530,12 +530,12 @@ func openSpecimenDialog() {
 	beBtn := footGrp.Button(
 		Txt("Before Consolidation"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(18),
-		Command(func() { appendLog("[specimen] Before Consolidation pressed (no-op stub)") }),
+		Command(func() { onBeforeConsolidation(stages) }),
 	)
 	afBtn := footGrp.Button(
 		Txt("After Consolidation"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(18),
-		Command(func() { appendLog("[specimen] After Consolidation pressed (no-op stub)") }),
+		Command(func() { onAfterConsolidation(stages) }),
 	)
 	Pack(beBtn, Side(LEFT), Padx(2))
 	Pack(afBtn, Side(LEFT), Padx(2))
@@ -673,6 +673,135 @@ func onUpdateSpecimen(memE, memT, capW *EntryWidget, stages [4]specEditorStage) 
 	appData.mu.Unlock()
 	_ = saveJSON("specimen.json", specimenFile{Specimen: snap})
 	appendLog("[specimen] updated")
+}
+
+// onBeforeConsolidation mirrors the C++ OnBUTTONBeConsol handler in
+// Dialog_Specimen.cpp.  It reads the live AIO physical values for LVDT, LDT1,
+// LDT2, LCDPT, then updates the BeforeCons stage and copies it into Present
+// (recomputing Present's Area and Volume from the new D/H).  It also
+// 0-adjusts the calibration c-coefficients of the four channels and saves
+// the updated specimen + calibration to JSON.
+func onBeforeConsolidation(stages [4]specEditorStage) {
+	appData.mu.RLock()
+	phys := appData.phys
+	appData.mu.RUnlock()
+
+	// Live displacements (ch 1 = LVDT, ch 2 = LDT1, ch 3 = LDT2, ch 9 = LCDPT)
+	lvdt := phys[1]
+	ldt1 := phys[2]
+	ldt2 := phys[3]
+	lcdpt := phys[9]
+
+	// Current Present values from the dialog widgets (Present is the reference)
+	pH := entryGetFloat(stages[0].height)
+	pV := entryGetFloat(stages[0].volume)
+	pLDT1 := entryGetFloat(stages[0].ldt1)
+	pLDT2 := entryGetFloat(stages[0].ldt2)
+
+	// Compute new BeforeCons values (assumes isotropic deformation)
+	beH := pH - lvdt
+	beV := pV * (1 - 3*lvdt/pH)
+	beA := beV / beH
+	beD := math.Sqrt(4 * beA / math.Pi)
+	beLDT1 := pLDT1 - ldt1
+	beLDT2 := pLDT2 - ldt2
+
+	// Write BeforeCons dialog widgets (editable)
+	entrySet(stages[2].height, beH)
+	entrySet(stages[2].volume, beV)
+	entrySet(stages[2].area, beA)
+	entrySet(stages[2].diameter, beD)
+	entrySet(stages[2].ldt1, beLDT1)
+	entrySet(stages[2].ldt2, beLDT2)
+
+	// Copy BeforeCons -> Present (Present is read-only; A/V are recomputed from D/H)
+	copyStageToPresent(&stages[2], &stages[0])
+
+	// Update appData and 0-adjust calibration c-coefficients
+	appData.mu.Lock()
+	appData.specimen.BeforeCons.Height = beH
+	appData.specimen.BeforeCons.Volume = beV
+	appData.specimen.BeforeCons.Area = beA
+	appData.specimen.BeforeCons.Diameter = beD
+	appData.specimen.BeforeCons.LDT1 = beLDT1
+	appData.specimen.BeforeCons.LDT2 = beLDT2
+	appData.specimen.Present = appData.specimen.BeforeCons
+	appData.cal[1].C -= lvdt
+	appData.cal[9].C -= lcdpt
+	appData.cal[2].C -= ldt1
+	appData.cal[3].C -= ldt2
+	snapSpec := appData.specimen
+	snapCal := appData.cal
+	appData.mu.Unlock()
+
+	_ = saveJSON("specimen.json", specimenFile{Specimen: snapSpec})
+	_ = saveJSON("calibration.json", calibrationFile{Cal: snapCal})
+	appendLog(fmt.Sprintf("[specimen] Before Consolidation: H=%.4f V=%.4f A=%.4f D=%.4f (0-adjusted CH01/CH09/CH02/CH03)", beH, beV, beA, beD))
+}
+
+// onAfterConsolidation mirrors the C++ OnBUTTONAfConsolidation handler in
+// Dialog_Specimen.cpp.  Similar to onBeforeConsolidation, but uses both LVDT
+// and LCDPT for the volume/area calculation (C++ assumes the volume change
+// measured by LCDPT is real volumetric strain during consolidation, not
+// isotropic deformation).
+func onAfterConsolidation(stages [4]specEditorStage) {
+	appData.mu.RLock()
+	phys := appData.phys
+	appData.mu.RUnlock()
+
+	// Live displacements (ch 1 = LVDT, ch 2 = LDT1, ch 3 = LDT2, ch 9 = LCDPT)
+	lvdt := phys[1]
+	ldt1 := phys[2]
+	ldt2 := phys[3]
+	lcdpt := phys[9]
+
+	// Current Present values from the dialog widgets
+	pH := entryGetFloat(stages[0].height)
+	pV := entryGetFloat(stages[0].volume)
+	pA := entryGetFloat(stages[0].area)
+	pD := entryGetFloat(stages[0].diameter)
+	pLDT1 := entryGetFloat(stages[0].ldt1)
+	pLDT2 := entryGetFloat(stages[0].ldt2)
+
+	// Compute new AfterCons values (uses both LVDT and LCDPT)
+	afH := pH - lvdt
+	afV := pV - lcdpt
+	afA := afV / afH
+	afD := pD * math.Sqrt(afA/pA)
+	afLDT1 := pLDT1 - ldt1
+	afLDT2 := pLDT2 - ldt2
+
+	// Write AfterCons dialog widgets (editable)
+	entrySet(stages[3].height, afH)
+	entrySet(stages[3].volume, afV)
+	entrySet(stages[3].area, afA)
+	entrySet(stages[3].diameter, afD)
+	entrySet(stages[3].ldt1, afLDT1)
+	entrySet(stages[3].ldt2, afLDT2)
+
+	// Copy AfterCons -> Present (Present is read-only; A/V are recomputed from D/H)
+	copyStageToPresent(&stages[3], &stages[0])
+
+	// Update appData and 0-adjust calibration c-coefficients
+	appData.mu.Lock()
+	appData.specimen.AfterCons.Height = afH
+	appData.specimen.AfterCons.Volume = afV
+	appData.specimen.AfterCons.Area = afA
+	appData.specimen.AfterCons.Diameter = afD
+	appData.specimen.AfterCons.LDT1 = afLDT1
+	appData.specimen.AfterCons.LDT2 = afLDT2
+	appData.specimen.Present = appData.specimen.AfterCons
+	appData.cal[1].C -= lvdt
+	appData.cal[9].C -= lcdpt
+	appData.cal[2].C -= ldt1
+	appData.cal[3].C -= ldt2
+	snapSpec := appData.specimen
+	snapCal := appData.cal
+	appData.mu.Unlock()
+
+	_ = saveJSON("specimen.json", specimenFile{Specimen: snapSpec})
+	_ = saveJSON("calibration.json", calibrationFile{Cal: snapCal})
+	appendLog(fmt.Sprintf("[specimen] After Consolidation: H=%.4f V=%.4f A=%.4f D=%.4f (0-adjusted CH01/CH09/CH02/CH03)", afH, afV, afA, afD))
 }
 
 // ─── Pre-Consolidation dialog ─────────────────────────────────────────────────

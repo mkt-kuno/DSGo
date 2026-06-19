@@ -188,6 +188,11 @@ type AppData struct {
 	controlNo   int
 	cyclicNo    int
 
+	// Motor output (computed by controlLoop; would be pushed to the DA board
+	// via FC16 in a production build).  motorDir is -1=DOWN, 0=stopped, +1=UP.
+	motorSpeed float64
+	motorDir   float64
+
 	// Persisted configuration
 	cal       [16]CalCoeff
 	specimen  SpecimenData
@@ -320,6 +325,7 @@ func main() {
 	loadConfigsOnStartup()
 
 	go modbusWorker()
+	go controlLoop()
 
 	NewTicker(100*time.Millisecond, updateUI)
 	App.Wait()
@@ -890,6 +896,8 @@ func onStartControl() {
 func onStopControl() {
 	appData.mu.Lock()
 	appData.controlOn = false
+	appData.motorSpeed = 0
+	appData.motorDir = 0
 	appData.mu.Unlock()
 	appendLog("[control] Stop requested.")
 }
@@ -1162,12 +1170,11 @@ func modbusWorker() {
 				raw[i] = int16(v)
 			}
 			phys := computePhys(raw)
-			params := computeParams(phys)
 
 			appData.mu.Lock()
 			appData.raw = raw
 			appData.phys = phys
-			appData.params = params
+			appData.params = computeParams()
 			appData.mu.Unlock()
 
 			tick++
@@ -1213,12 +1220,11 @@ func modbusWorker() {
 		}
 		consecutiveErrors = 0
 		phys := computePhys(raw)
-		params := computeParams(phys)
 
 		appData.mu.Lock()
 		appData.raw = raw
 		appData.phys = phys
-		appData.params = params
+		appData.params = computeParams()
 		appData.mu.Unlock()
 
 		tick++
@@ -1226,6 +1232,129 @@ func modbusWorker() {
 			appendLog(fmt.Sprintf("[modbus] tick=%d ok raws=%d", tick, len(raw)))
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// ─── Control loop (pre-consolidation algorithm) ───────────────────────────────
+// Runs in parallel with modbusWorker() at 10 Hz.  When controlOn is set and
+// controlType == "PreCon", implements the ramped bang-bang algorithm from
+// Control_Motor.cpp:294-341:
+//
+//	if q > target + com_err  → retract (UP)   saturated | linear ramp
+//	if q < target + ext_err  → compress (DOWN) saturated | linear ramp
+//	else                     → stop in deadzone
+//
+// The computed speed and direction are written to appData.motorSpeed /
+// motorDir for the (future) FC16 DA board write and for the updateUI ticker.
+// Logs to spdlog only on state transitions.
+func controlLoop() {
+	const (
+		dirUp   = 1.0
+		dirDown = -1.0
+		dirStop = 0.0
+	)
+
+	var lastSpeed, lastDir float64
+
+	for {
+		time.Sleep(100 * time.Millisecond)
+
+		// Snapshot control flags + type under one RLock.
+		appData.mu.RLock()
+		on := appData.controlOn
+		cType := appData.controlType
+		appData.mu.RUnlock()
+
+		if !on {
+			// Control is off: ensure motor is zeroed (idempotent w.r.t. the
+			// onStopControl write - just re-asserts in case anything else
+			// flipped the flag).
+			appData.mu.Lock()
+			prevSpeed, prevDir := appData.motorSpeed, appData.motorDir
+			appData.motorSpeed = 0
+			appData.motorDir = 0
+			appData.mu.Unlock()
+			if prevSpeed != 0 || prevDir != 0 {
+				appendLog(fmt.Sprintf("[control] motor stopped (was speed=%g dir=%g)", prevSpeed, prevDir))
+				lastSpeed, lastDir = 0, 0
+			}
+			continue
+		}
+
+		if cType != "PreCon" {
+			// Control is on but a different algorithm is selected.  Don't
+			// run PreCon; just make sure no motor is being driven and log
+			// the transition once.
+			appData.mu.Lock()
+			prevSpeed, prevDir := appData.motorSpeed, appData.motorDir
+			appData.motorSpeed = 0
+			appData.motorDir = 0
+			appData.mu.Unlock()
+			if prevSpeed != 0 || prevDir != 0 {
+				appendLog(fmt.Sprintf("[control] %s selected: motor stopped (was speed=%g dir=%g)", cType, prevSpeed, prevDir))
+				lastSpeed, lastDir = 0, 0
+			} else {
+				appendLog(fmt.Sprintf("[control] %s selected (no PreCon algorithm running)", cType))
+			}
+			continue
+		}
+
+		// PreCon: snapshot all needed state under one RLock.
+		appData.mu.RLock()
+		pc := appData.preCon
+		q := appData.params[0]
+		comErr := appData.envVars.Values[8]
+		extErr := appData.envVars.Values[9]
+		appData.mu.RUnlock()
+
+		target := pc.TargetQ
+		qErr := pc.QError
+		maxSpd := pc.MaxSpeed
+
+		var speed, dir float64
+		switch {
+		case q > target+comErr: // overshoot (compression too high) → retract
+			dir = dirUp
+			if q > target+qErr {
+				speed = maxSpd // saturated
+			} else {
+				denom := qErr
+				if denom == 0 {
+					denom = 1
+				}
+				speed = maxSpd * ((q - target) / denom) // linear ramp
+			}
+		case q < target+extErr: // undershoot → compress
+			dir = dirDown
+			if q < target-qErr {
+				speed = maxSpd
+			} else {
+				denom := qErr
+				if denom == 0 {
+					denom = 1
+				}
+				speed = maxSpd * ((target - q) / denom)
+			}
+		default: // within deadzone
+			speed = 0
+			dir = dirStop
+		}
+		if speed < 0 {
+			speed = -speed
+		}
+
+		// Publish to appData.
+		appData.mu.Lock()
+		appData.motorSpeed = speed
+		appData.motorDir = dir
+		appData.mu.Unlock()
+
+		// Log on transitions only.
+		if speed != lastSpeed || dir != lastDir {
+			appendLog(fmt.Sprintf("[control] preCon: speed=%g dir=%g q=%g target=%g", speed, dir, q, target))
+			lastSpeed = speed
+			lastDir = dir
+		}
 	}
 }
 
@@ -1249,28 +1378,110 @@ func computePhys(raw [16]int16) [16]float64 {
 	return phys
 }
 
-func computeParams(phys [16]float64) [32]float64 {
+// computeParams mirrors DigitShowModbus's `Control_Motor::CalculateParam`
+// (src/Control_Motor.cpp:177-233).  It pulls the latest calibrated physical
+// samples and the user-edited Present specimen dimensions out of appData
+// and returns the 32 parameter slots that the live plot and TSV writer
+// consume.
+//
+// AIO channel mapping (DigitShowModbus.h:53-57):
+//
+//	phys[0] = VLC    (load cell,        N)
+//	phys[1] = LVDT   (axial displ.,     mm)
+//	phys[2] = LDT1   (local axial #1,   mm)
+//	phys[3] = LDT2   (local axial #2,   mm)
+//	phys[8] = HCDPT  (cell pressure,    kPa)
+//	phys[9] = LCDPT  (volume change,    mm^3)
+//
+// Caller must hold appData.mu (read or write). Do not call from an unlocked
+// goroutine.  The function used to take its own RLock, but that recursed into
+// the write lock held by modbusWorker() and deadlocked the program.  We now
+// rely on the caller's lock and run with whatever mode it holds.
+func computeParams() [32]float64 {
+	phys := appData.phys
+	present := appData.specimen.Present
+
 	var p [32]float64
-	p[0] = phys[0] * 100
-	p[1] = phys[4] * 100
-	p[2] = phys[0] * 100
-	p[3] = phys[4] * 100
-	p[4] = phys[1] * 100
-	p[5] = phys[2] * 100
-	p[6] = (phys[1] + 2*phys[2]) * 100
-	p[7] = phys[2] * 10
-	p[8] = phys[3] * 10
-	p[9] = (phys[2] + phys[3]) * 50
-	p[10] = phys[2] * 50
-	p[11] = phys[3] * 50
-	p[24] = 50.0 + phys[1]*5
-	p[25] = 100.0 + phys[1]*2
-	p[26] = math.Pi * p[24] * p[24] / 4.0
-	p[27] = p[24] * p[24] * p[25] * math.Pi / 4.0
-	p[28] = 50.0
-	p[29] = 100.0
-	p[30] = math.Pi * 50.0 * 50.0 / 4.0
-	p[31] = 50.0 * 50.0 * 100.0 * math.Pi / 4.0
+
+	// Guard against a zero/uninitialised Present specimen so a divide-by-zero
+	// in the area / strain formulas can't propagate NaN through the whole
+	// parameter array.  The C++ reference doesn't protect against this; we do
+	// because the Go UI keeps running while the user is editing specimen
+	// sizes and we don't want to flash a plot full of NaNs.
+	safeDiv := func(num, den float64) float64 {
+		if den == 0 {
+			return 0
+		}
+		return num / den
+	}
+
+	// Current specimen geometry (C++ lines 183-186).
+	currentHeight := present.Height - phys[1]   // LVDT
+	currentVolume := present.Volume - phys[9]   // LCDPT
+	currentArea := safeDiv(currentVolume, currentHeight)
+	var currentDiameter float64
+	if currentArea > 0 {
+		currentDiameter = math.Sqrt(4 * currentArea / math.Pi)
+	}
+
+	// Stress state (C++ lines 194-197).  VLC is in N, area in mm^2, so
+	// N/mm^2 = MPa; multiply by 1000 to get kPa.
+	q := safeDiv(phys[0], currentArea) * 1000.0
+	eSr := phys[8]                                    // HCDPT already kPa
+	eSa := eSr + q
+	eP := (eSa + 2*eSr) / 3.0
+
+	// Strains in % (C++ lines 189-191).
+	var ea, ev, er float64
+	if present.Height > 0 {
+		ea = (present.Height - currentHeight) / present.Height * 100.0
+	}
+	if present.Volume > 0 {
+		ev = (present.Volume - currentVolume) / present.Volume * 100.0
+	}
+	if ea < 100 && ev < 100 {
+		oneMinusEv := 1.0 - ev/100.0
+		oneMinusEa := 1.0 - ea/100.0
+		if oneMinusEa > 0 && oneMinusEv > 0 {
+			er = (1.0 - math.Sqrt(oneMinusEv/oneMinusEa)) * 100.0
+		}
+	}
+
+	// Local axial strain from the two LDTs (C++ lines 207-212).
+	ldt1 := present.LDT1 - phys[2]
+	ldt2 := present.LDT2 - phys[3]
+	var eLDT, eLDT1, eLDT2 float64
+	if present.LDT1 > 0 && present.LDT2 > 0 {
+		eLDT = ((phys[2]/present.LDT1) + (phys[3]/present.LDT2)) * 0.5 * 100.0
+		eLDT1 = phys[2] / present.LDT1 * 100.0
+		eLDT2 = phys[3] / present.LDT2 * 100.0
+	}
+
+	// Params 0-11: stresses and strains (C++ lines 214-225).
+	p[0] = q
+	p[1] = eP
+	p[2] = eSa
+	p[3] = eSr
+	p[4] = ea
+	p[5] = er
+	p[6] = ev
+	p[7] = ldt1
+	p[8] = ldt2
+	p[9] = eLDT
+	p[10] = eLDT1
+	p[11] = eLDT2
+	// params 12-23 left zero (C++ leaves them 0).
+	// params 24-27 = current.{diameter,height,area,volume} (C++ lines 227-230).
+	p[24] = currentDiameter
+	p[25] = currentHeight
+	p[26] = currentArea
+	p[27] = currentVolume
+	// params 28-31 = present.{diameter,height,area,volume} (C++ lines 231-234).
+	p[28] = present.Diameter
+	p[29] = present.Height
+	p[30] = present.Area
+	p[31] = present.Volume
+
 	return p
 }
 
