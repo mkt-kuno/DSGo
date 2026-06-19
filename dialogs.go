@@ -47,8 +47,139 @@ func saveJSON(name string, v any) error {
 type calibrationFile struct{ Cal [16]CalCoeff `json:"cal"` }
 type specimenFile struct{ Specimen SpecimenData `json:"specimen"` }
 type preConFile struct{ PreCon PreConParams `json:"preCon"` }
-type stepCtrlFile struct{ Step StepCtrl `json:"step"` }
 type envVarsFile struct{ Env EnvVars `json:"env"` }
+
+// ─── Step Control on-disk format (DigitShowModbus.h:46-47) ───────────────────
+// DigitShowModbus serialises its 1024-row step control table as a top-level
+// JSON object with a "type" discriminator plus 1024 keys "0000".."1023", each
+// holding a "ctrl" field and 16 "args00".."args15" fields.  The Go struct
+// below mirrors that layout, with custom MarshalJSON/UnmarshalJSON that merge
+// the type field with the keyed map into a single top-level object.
+
+const dsmStepCtrlMax = 1024
+
+type stepCtrlFileEntry struct {
+	Ctrl   int     `json:"ctrl"`
+	Args00 float64 `json:"args00"`
+	Args01 float64 `json:"args01"`
+	Args02 float64 `json:"args02"`
+	Args03 float64 `json:"args03"`
+	Args04 float64 `json:"args04"`
+	Args05 float64 `json:"args05"`
+	Args06 float64 `json:"args06"`
+	Args07 float64 `json:"args07"`
+	Args08 float64 `json:"args08"`
+	Args09 float64 `json:"args09"`
+	Args10 float64 `json:"args10"`
+	Args11 float64 `json:"args11"`
+	Args12 float64 `json:"args12"`
+	Args13 float64 `json:"args13"`
+	Args14 float64 `json:"args14"`
+	Args15 float64 `json:"args15"`
+}
+
+func (e stepCtrlFileEntry) args() [16]float64 {
+	return [16]float64{
+		e.Args00, e.Args01, e.Args02, e.Args03,
+		e.Args04, e.Args05, e.Args06, e.Args07,
+		e.Args08, e.Args09, e.Args10, e.Args11,
+		e.Args12, e.Args13, e.Args14, e.Args15,
+	}
+}
+
+func makeStepCtrlFileEntry(ctrl int, args [16]float64) stepCtrlFileEntry {
+	return stepCtrlFileEntry{
+		Ctrl:   ctrl,
+		Args00: args[0], Args01: args[1], Args02: args[2], Args03: args[3],
+		Args04: args[4], Args05: args[5], Args06: args[6], Args07: args[7],
+		Args08: args[8], Args09: args[9], Args10: args[10], Args11: args[11],
+		Args12: args[12], Args13: args[13], Args14: args[14], Args15: args[15],
+	}
+}
+
+type stepCtrlFile struct {
+	Type    string                       `json:"type"`
+	Entries map[string]stepCtrlFileEntry `json:"-"`
+}
+
+func (f *stepCtrlFile) MarshalJSON() ([]byte, error) {
+	m := make(map[string]any, len(f.Entries)+1)
+	m["type"] = f.Type
+	for k, v := range f.Entries {
+		m[k] = v
+	}
+	return json.Marshal(m)
+}
+
+func (f *stepCtrlFile) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	f.Entries = make(map[string]stepCtrlFileEntry, len(raw))
+	for k, v := range raw {
+		if k == "type" {
+			if err := json.Unmarshal(v, &f.Type); err != nil {
+				return err
+			}
+			continue
+		}
+		var e stepCtrlFileEntry
+		if err := json.Unmarshal(v, &e); err != nil {
+			return err
+		}
+		f.Entries[k] = e
+	}
+	return nil
+}
+
+func stepCtrlToFile(sc *StepCtrl) *stepCtrlFile {
+	f := &stepCtrlFile{
+		Type:    "StepControl",
+		Entries: make(map[string]stepCtrlFileEntry, dsmStepCtrlMax),
+	}
+	for i := 0; i < dsmStepCtrlMax; i++ {
+		key := fmt.Sprintf("%04d", i)
+		f.Entries[key] = makeStepCtrlFileEntry(sc.ControlNo[i], sc.Args[i])
+	}
+	return f
+}
+
+func fileToStepCtrl(f *stepCtrlFile) StepCtrl {
+	var sc StepCtrl
+	for k, e := range f.Entries {
+		idx, err := strconv.Atoi(k)
+		if err != nil || idx < 0 || idx >= dsmStepCtrlMax {
+			continue
+		}
+		sc.ControlNo[idx] = e.Ctrl
+		sc.Args[idx] = e.args()
+	}
+	return sc
+}
+
+func saveStepCtrlJSON(sc *StepCtrl) error {
+	return saveJSON("stepctrl.json", stepCtrlToFile(sc))
+}
+
+func loadStepCtrlJSON() (StepCtrl, error) {
+	var f stepCtrlFile
+	if err := loadJSON("stepctrl.json", &f); err != nil {
+		return StepCtrl{}, err
+	}
+	return fileToStepCtrl(&f), nil
+}
+
+// clampStepNo clamps an int to the valid [0, dsmStepCtrlMax) row range.
+func clampStepNo(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n >= dsmStepCtrlMax {
+		return dsmStepCtrlMax - 1
+	}
+	return n
+}
 
 func saveAllConfigs() {
 	ensureConfigDir()
@@ -56,7 +187,7 @@ func saveAllConfigs() {
 	_ = saveJSON("calibration.json", calibrationFile{Cal: appData.cal})
 	_ = saveJSON("specimen.json", specimenFile{Specimen: appData.specimen})
 	_ = saveJSON("precon.json", preConFile{PreCon: appData.preCon})
-	_ = saveJSON("stepctrl.json", stepCtrlFile{Step: appData.stepCtrl})
+	_ = saveStepCtrlJSON(&appData.stepCtrl)
 	_ = saveJSON("envvars.json", envVarsFile{Env: appData.envVars})
 	appData.mu.RUnlock()
 }
@@ -83,10 +214,9 @@ func loadAllConfigs() {
 		appData.mu.Unlock()
 		appendLog("[config] precon.json loaded")
 	}
-	var st stepCtrlFile
-	if err := loadJSON("stepctrl.json", &st); err == nil {
+	if sc, err := loadStepCtrlJSON(); err == nil {
 		appData.mu.Lock()
-		appData.stepCtrl = st.Step
+		appData.stepCtrl = sc
 		appData.mu.Unlock()
 		appendLog("[config] stepctrl.json loaded")
 	}
@@ -909,17 +1039,52 @@ func openStepCtrlDialog() {
 		}),
 	)
 	Pack(changeChk, Side(LEFT), Padx(4))
+	// refreshCurrentDisplay updates the read-only "Current Step No." and
+	// "Current Control No." entries from appData.stepCtrl.CurrentStepNo.
+	refreshCurrentDisplay := func() {
+		appData.mu.RLock()
+		cur := appData.stepCtrl.CurrentStepNo
+		var curCtrl int
+		if cur >= 0 && cur < dsmStepCtrlMax {
+			curCtrl = appData.stepCtrl.ControlNo[cur]
+		}
+		appData.mu.RUnlock()
+		entrySetRO(stepEntry, cur)
+		entrySetRO(ctrlEntry, curCtrl)
+	}
 	decBtn = ctrlRow.Button(
 		Txt("<-"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(4),
 		State("disabled"),
-		Command(func() { appendLog("[step] step-- (no-op stub)") }),
+		Command(func() {
+			appData.mu.Lock()
+			n := appData.stepCtrl.CurrentStepNo - 1
+			if n < 0 {
+				n = 0
+			}
+			appData.stepCtrl.CurrentStepNo = n
+			appData.stepCtrl.CyclicNo = 0
+			appData.mu.Unlock()
+			refreshCurrentDisplay()
+			appendLog(fmt.Sprintf("[step] CurrentStepNo -> %d (CyclicNo reset)", n))
+		}),
 	)
 	incBtn = ctrlRow.Button(
 		Txt("->"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(4),
 		State("disabled"),
-		Command(func() { appendLog("[step] step++ (no-op stub)") }),
+		Command(func() {
+			appData.mu.Lock()
+			n := appData.stepCtrl.CurrentStepNo + 1
+			if n >= dsmStepCtrlMax {
+				n = dsmStepCtrlMax - 1
+			}
+			appData.stepCtrl.CurrentStepNo = n
+			appData.stepCtrl.CyclicNo = 0
+			appData.mu.Unlock()
+			refreshCurrentDisplay()
+			appendLog(fmt.Sprintf("[step] CurrentStepNo -> %d (CyclicNo reset)", n))
+		}),
 	)
 	Pack(decBtn, Side(LEFT), Padx(2))
 	Pack(incBtn, Side(LEFT), Padx(2))
@@ -956,26 +1121,40 @@ func openStepCtrlDialog() {
 		Width(6), Relief(SUNKEN), Borderwidth(1),
 	)
 	Pack(editCtrl, Side(LEFT), Padx(2))
+	var args [16]*EntryWidget
 	loadBtn := idxRow.Button(
 		Txt("Load"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
-		Command(func() { appendLog("[step] Load (no-op stub)") }),
+		Command(func() {
+			appData.mu.Lock()
+			n := clampStepNo(entryGetInt(editStep))
+			appData.stepCtrl.EditStepNo = n
+			ctrl := appData.stepCtrl.ControlNo[n]
+			argVals := appData.stepCtrl.Args[n]
+			appData.mu.Unlock()
+			entrySet(editStep, n)
+			entrySet(editCtrl, ctrl)
+			for i := 0; i < 16; i++ {
+				entrySet(args[i], argVals[i])
+			}
+			appendLog(fmt.Sprintf("[step] loaded step %d (ctrl=%d) into editor", n, ctrl))
+		}),
 	)
-	var args [16]*EntryWidget
 	updArgs := idxRow.Button(
 		Txt("Update"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(8),
 		Command(func() {
 			appData.mu.Lock()
-			appData.stepCtrl.StepNo = entryGetInt(editStep)
-			appData.stepCtrl.ControlNo = entryGetInt(editCtrl)
+			n := clampStepNo(entryGetInt(editStep))
+			appData.stepCtrl.EditStepNo = n
+			appData.stepCtrl.ControlNo[n] = entryGetInt(editCtrl)
 			for i := 0; i < 16; i++ {
-				appData.stepCtrl.Args[i] = entryGetFloat(args[i])
+				appData.stepCtrl.Args[n][i] = entryGetFloat(args[i])
 			}
 			snap := appData.stepCtrl
 			appData.mu.Unlock()
-			_ = saveJSON("stepctrl.json", stepCtrlFile{Step: snap})
-			appendLog("[step] updated")
+			_ = saveStepCtrlJSON(&snap)
+			appendLog(fmt.Sprintf("[step] updated step %d", n))
 		}),
 	)
 	Pack(loadBtn, Side(LEFT), Padx(2))
@@ -985,7 +1164,8 @@ func openStepCtrlDialog() {
 	argRow := editRow.Frame(Background(bgPanel))
 	Pack(argRow, Fill(FILL_X), Side(TOP), Pady(1))
 	appData.mu.RLock()
-	argVals := appData.stepCtrl.Args
+	editRowIdx := clampStepNo(appData.stepCtrl.EditStepNo)
+	argVals := appData.stepCtrl.Args[editRowIdx]
 	appData.mu.RUnlock()
 	for i := 0; i < 16; i++ {
 		lbl := argRow.Label(
@@ -1017,20 +1197,51 @@ func openStepCtrlDialog() {
 	readBtn := foot.Button(
 		Txt("Read from file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(14),
-		Command(func() { appendLog("[step] Read from file (no-op stub)") }),
+		Command(func() {
+			sc, err := loadStepCtrlJSON()
+			if err != nil {
+				appendLog("[step] read failed: " + err.Error())
+				return
+			}
+			appData.mu.Lock()
+			appData.stepCtrl = sc
+			// Refresh the visible editor fields from the freshly loaded
+			// EditStepNo row, and the read-only display from CurrentStepNo.
+			editIdx := clampStepNo(appData.stepCtrl.EditStepNo)
+			ctrl := appData.stepCtrl.ControlNo[editIdx]
+			rowArgs := appData.stepCtrl.Args[editIdx]
+			cur := appData.stepCtrl.CurrentStepNo
+			var curCtrl int
+			if cur >= 0 && cur < dsmStepCtrlMax {
+				curCtrl = appData.stepCtrl.ControlNo[cur]
+			}
+			appData.mu.Unlock()
+			entrySet(editStep, editIdx)
+			entrySet(editCtrl, ctrl)
+			for i := 0; i < 16; i++ {
+				entrySet(args[i], rowArgs[i])
+			}
+			entrySetRO(stepEntry, cur)
+			entrySetRO(ctrlEntry, curCtrl)
+			appendLog("[step] read 1024-row table from " + configPath("stepctrl.json"))
+		}),
 	)
 	writeBtn := foot.Button(
 		Txt("Save to file"), Font(HELVETICA, 9),
 		Background(bgBtn), Foreground(fgText), Width(14),
 		Command(func() {
+			// Pull the dialog's current edit row into the table first so the
+			// 1024-row dump reflects unsaved edits the user made.
 			appData.mu.Lock()
+			n := clampStepNo(appData.stepCtrl.EditStepNo)
+			appData.stepCtrl.ControlNo[n] = entryGetInt(editCtrl)
 			for i := 0; i < 16; i++ {
-				appData.stepCtrl.Args[i] = entryGetFloat(args[i])
+				appData.stepCtrl.Args[n][i] = entryGetFloat(args[i])
 			}
 			snap := appData.stepCtrl
 			appData.mu.Unlock()
-			_ = saveJSON("stepctrl.json", stepCtrlFile{Step: snap})
-			appendLog("[step] saved to " + configPath("stepctrl.json"))
+			_ = saveStepCtrlJSON(&snap)
+			appendLog("[step] saved 1024-row table to " + configPath("stepctrl.json"))
 		}),
 	)
 	closeBtn := foot.Button(
@@ -1043,13 +1254,19 @@ func openStepCtrlDialog() {
 	Pack(closeBtn, Side(RIGHT), Padx(2))
 
 	appData.mu.RLock()
-	curStep := appData.stepCtrl.StepNo
-	curCtrl := appData.stepCtrl.ControlNo
+	curStep := appData.stepCtrl.CurrentStepNo
+	var curCtrl int
+	if curStep >= 0 && curStep < dsmStepCtrlMax {
+		curCtrl = appData.stepCtrl.ControlNo[curStep]
+	}
+	// editRowIdx was computed during the args initialisation above; reuse it
+	// for the initial Control No. display so we don't pay the second RLock.
+	editCtrlStart := appData.stepCtrl.ControlNo[editRowIdx]
 	appData.mu.RUnlock()
 	entrySetRO(stepEntry, curStep)
 	entrySetRO(ctrlEntry, curCtrl)
-	entrySet(editStep, curStep)
-	entrySet(editCtrl, curCtrl)
+	entrySet(editStep, editRowIdx)
+	entrySet(editCtrl, editCtrlStart)
 }
 
 const stepCtrlHelp = `Control No.  Unit: Stress (kPa), Stress_rate (kPa/min), Motor_Speed (RPM), Strain (%), Time (min)

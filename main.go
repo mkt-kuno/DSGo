@@ -151,11 +151,14 @@ type PreConParams struct {
 }
 
 // Step Control
+// Mirrors the C++ Step[DSM_STEPCTRL_STEP_MAX] table in DigitShowModbus.h:46-47
+// with DSM_STEPCTRL_STEP_MAX = 1024 and DSM_STEPCTRL_ARGS_MAX = 16.
 type StepCtrl struct {
-	StepNo    int
-	ControlNo int
-	CyclicNo  int
-	Args      [16]float64
+	CurrentStepNo int               // runtime: which row the motor loop is executing
+	EditStepNo    int               // editable: which row the dialog is editing
+	ControlNo     [1024]int         // per-row control number (1024 rows)
+	Args          [1024][16]float64 // per-row args (1024 rows × 16 args)
+	CyclicNo      int               // runtime: cycle counter of the active cyclic step
 }
 
 // Env variables (read from / written to os.Environ on Apply)
@@ -276,8 +279,8 @@ func main() {
 	// Default pre-consolidation
 	appData.preCon = PreConParams{TargetQ: 0, QError: 10, MaxSpeed: 1000}
 	// Default step control
-	appData.stepCtrl.StepNo = 0
-	appData.stepCtrl.ControlNo = 0
+	appData.stepCtrl.CurrentStepNo = 0
+	appData.stepCtrl.EditStepNo = 0
 	appData.stepCtrl.CyclicNo = 0
 	// Default environmental variable names (mirrors C++ default)
 	for i := range appData.envVars.Values {
@@ -984,8 +987,11 @@ func updateUI() {
 	saveFile := appData.saveFile
 	ctrlType := appData.controlType
 	sampleTime := appData.sampleTime
-	stepNo := appData.stepCtrl.StepNo
-	controlNo := appData.stepCtrl.ControlNo
+	curStep := appData.stepCtrl.CurrentStepNo
+	var controlNo int
+	if curStep >= 0 && curStep < 1024 {
+		controlNo = appData.stepCtrl.ControlNo[curStep]
+	}
 	cyclicNo := appData.stepCtrl.CyclicNo
 	appData.mu.RUnlock()
 
@@ -1074,7 +1080,7 @@ func updateUI() {
 			fmt.Sprintf("Mode: %s", modeLabel(controlOn, ctrlType)),
 			fmt.Sprintf("Control On: %v", controlOn),
 			fmt.Sprintf("Saving: %v", savingOn),
-			fmt.Sprintf("Step No: %d   Control No: %d   Cyclic No: %d", stepNo, controlNo, cyclicNo),
+			fmt.Sprintf("Step No: %d   Control No: %d   Cyclic No: %d", curStep, controlNo, cyclicNo),
 			fmt.Sprintf("Sample Time: %s", sampleTime),
 			fmt.Sprintf("Port: %s", portStr),
 		}
