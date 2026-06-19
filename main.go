@@ -102,9 +102,12 @@ var voltUnits = [8]string{
 }
 
 // ─── Control type / sampling time options ─────────────────────────────────────
+// Per DigitShowModbus's main menu, only three top-level control flows are
+// exposed in the dropdown: None, Pre-Consolidation, Step Control.  All the
+// other control algorithms (Creep, MLoading, CLoading, Sensitivity, etc.) are
+// selected by editing the Step Control's Control No. + Args[NN] entries.
 var controlTypes = []string{
-	"None", "Stop", "MonotonicAxial", "CyclicAxialStress",
-	"CyclicAxialStrain", "Creep", "LinearStressPath", "Consolidation",
+	"None", "PreCon", "Step",
 }
 
 var samplingTimes = []string{
@@ -236,6 +239,11 @@ var (
 	plotB       *miniChart
 
 	logText *TextWidget
+
+	// ctrlInfoText is the IDC_CTRL_INFORMATION-equivalent: a small read-only
+	// text widget that shows the current control state as free text, mirroring
+	// the C++ `pDoc->ControlInfoString()`.
+	ctrlInfoText *TextWidget
 )
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -512,30 +520,45 @@ func buildParamSection(parent *FrameWidget) {
 	}
 }
 
-// ─── Bottom-left: Settings + Step Control + Start/Stop buttons ────────────────
+// ─── Bottom-right: Current Settings + Basic Settings + 4 Start/Stop buttons ────
+// Layout (matches the right column of the DigitShowModbus MainDialog):
+//   1. Current Settings (groupbox)
+//        - ControlType
+//        - SamplingTime
+//   2. Basic Settings (groupbox)
+//        - ControlType [combo] [Apply]
+//        - SamplingTime [combo] [Apply]
+//   3. Start Control / Stop Control   (2x1 buttons)
+//   4. Start Saving / Stop Saving     (2x1 buttons)
+//
+// Step Control fields and Port status row are intentionally not part of the
+// right column - they live in the center column's "Control Information" /
+// "Save: Filename" rows instead.
 func buildSettingsPanel(parent *FrameWidget) {
-	// Port status row (top of settings column)
-	portGr := makeGroup(parent, "Port")
-	portRow := portGr.Frame(Background(bgPanel))
-	Pack(portRow, Fill(FILL_X), Side(TOP))
-	statusLbl := portRow.Label(
-		Txt("Status"), Font(HELVETICA, 9),
-		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
-	)
-	portStatusLbl = portRow.Label(
-		Txt("probing..."), Font(HELVETICA, 9, BOLD),
-		Foreground(fgOrange), Background(bgPanel), Anchor(W),
-	)
-	reconnectBtn := portRow.Button(
-		Txt("Reconnect"), Font(HELVETICA, 8),
-		Width(8), Command(func() { requestReconnect() }),
-	)
-	Pack(statusLbl, Side(LEFT))
-	Pack(portStatusLbl, Side(LEFT), Padx(2))
-	Pack(reconnectBtn, Side(LEFT), Padx(4))
+	// Current Settings group
+	csGr := makeGroup(parent, "Current Settings")
+	cs := csGr.Frame(Background(bgPanel))
+	Pack(cs, Fill(FILL_X), Side(TOP))
+
+	mkRow := func(label string, lblRef **LabelWidget, init string) {
+		r := cs.Frame(Background(bgPanel))
+		Pack(r, Fill(FILL_X), Side(TOP))
+		lbl := r.Label(
+			Txt(label), Font(HELVETICA, 9),
+			Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
+		)
+		*lblRef = r.Label(
+			Txt(init), Font(HELVETICA, 9, BOLD),
+			Foreground(fgGreen), Background(bgPanel), Anchor(W),
+		)
+		Pack(lbl, Side(LEFT))
+		Pack(*lblRef, Side(LEFT), Padx(2))
+	}
+	mkRow("ControlType", &ctrlTypeCurLbl, "00:None")
+	mkRow("SamplingTime", &sampTimeCurLbl, "1")
 
 	// Basic Settings group
-	bsGr := makeGroup(parent, "Basic")
+	bsGr := makeGroup(parent, "Basic Settings")
 	bs := bsGr.Frame(Background(bgPanel))
 	Pack(bs, Fill(FILL_X), Side(TOP))
 
@@ -581,85 +604,6 @@ func buildSettingsPanel(parent *FrameWidget) {
 	Pack(comboSampTime, Side(LEFT))
 	Pack(apply2, Side(LEFT), Padx(2))
 
-	// Current Settings group
-	csGr := makeGroup(parent, "Current")
-	cs := csGr.Frame(Background(bgPanel))
-	Pack(cs, Fill(FILL_X), Side(TOP))
-
-	mkRow := func(label string, lblRef **LabelWidget, init string) {
-		r := cs.Frame(Background(bgPanel))
-		Pack(r, Fill(FILL_X), Side(TOP))
-		lbl := r.Label(
-			Txt(label), Font(HELVETICA, 9),
-			Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
-		)
-		*lblRef = r.Label(
-			Txt(init), Font(HELVETICA, 9, BOLD),
-			Foreground(fgGreen), Background(bgPanel), Anchor(W),
-		)
-		Pack(lbl, Side(LEFT))
-		Pack(*lblRef, Side(LEFT), Padx(2))
-	}
-	mkRow("ControlType", &ctrlTypeCurLbl, "00:None")
-	mkRow("SamplingTime", &sampTimeCurLbl, "1")
-
-	// Step Control group
-	scGr := makeGroup(parent, "Step Control")
-	sc := scGr.Frame(Background(bgPanel))
-	Pack(sc, Fill(FILL_X), Side(TOP))
-
-	scRow1 := sc.Frame(Background(bgPanel))
-	Pack(scRow1, Fill(FILL_X), Side(TOP))
-	stepNoHdr := scRow1.Label(
-		Txt("Step No"), Font(HELVETICA, 9),
-		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
-	)
-	stepNoLbl = scRow1.Label(
-		Txt("0"), Font(HELVETICA, 9, BOLD),
-		Foreground(fgGreen), Background(bgPanel), Anchor(W),
-	)
-	Pack(stepNoHdr, Side(LEFT))
-	Pack(stepNoLbl, Side(LEFT), Padx(2))
-
-	scRow2 := sc.Frame(Background(bgPanel))
-	Pack(scRow2, Fill(FILL_X), Side(TOP))
-	ctrlNoHdr := scRow2.Label(
-		Txt("Control No"), Font(HELVETICA, 9),
-		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
-	)
-	ctrlNoLbl = scRow2.Label(
-		Txt("0"), Font(HELVETICA, 9, BOLD),
-		Foreground(fgGreen), Background(bgPanel), Anchor(W),
-	)
-	Pack(ctrlNoHdr, Side(LEFT))
-	Pack(ctrlNoLbl, Side(LEFT), Padx(2))
-
-	scRow3 := sc.Frame(Background(bgPanel))
-	Pack(scRow3, Fill(FILL_X), Side(TOP))
-	elapsedHdr := scRow3.Label(
-		Txt("Elapsed"), Font(HELVETICA, 9),
-		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
-	)
-	elapsedLbl = scRow3.Label(
-		Txt("0 [s]"), Font(HELVETICA, 9, BOLD),
-		Foreground(fgGreen), Background(bgPanel), Anchor(W),
-	)
-	Pack(elapsedHdr, Side(LEFT))
-	Pack(elapsedLbl, Side(LEFT), Padx(2))
-
-	scRow4 := sc.Frame(Background(bgPanel))
-	Pack(scRow4, Fill(FILL_X), Side(TOP))
-	cyclicNoHdr := scRow4.Label(
-		Txt("Cyclic No"), Font(HELVETICA, 9),
-		Foreground(fgText), Background(bgPanel), Width(11), Anchor(W),
-	)
-	cyclicNoLbl = scRow4.Label(
-		Txt("0"), Font(HELVETICA, 9, BOLD),
-		Foreground(fgGreen), Background(bgPanel), Anchor(W),
-	)
-	Pack(cyclicNoHdr, Side(LEFT))
-	Pack(cyclicNoLbl, Side(LEFT), Padx(2))
-
 	// Start/Stop buttons in 2 rows
 	btnGr := makeGroup(parent, "")
 	btnFr1 := btnGr.Frame(Background(bgPanel))
@@ -699,25 +643,51 @@ func buildSettingsPanel(parent *FrameWidget) {
 	Pack(btnSaveOff, Side(LEFT), Padx(2))
 }
 
-// ─── Center column: spdlog + Mode indicator + Save filename + elapsed ─────────
+// ─── Center column: spdlog + Control Information + Mode + Save filename ───────
+// Layout (matches IDR_MAINFRAME / DigitShowModbusView):
+//   1. spdlog (latest ~4 lines) — IDC_SPDLOG_LATEST equivalent
+//   2. Control Information FreeText — IDC_CTRL_INFORMATION equivalent
+//   3. Mode: <text> row
+//   4. Save: Filename [text] [0 sec] row
 func buildCenterPanel(parent *FrameWidget) {
-	gr := makeGroup(parent, "spdlog (latest 4 lines)")
+	gr := makeGroup(parent, "spdlog + Control Info")
 
+	// 1. spdlog (small, fixed height so it doesn't eat the whole column)
 	logFr := gr.Frame(Background(bgCell), Relief(SUNKEN), Borderwidth(1))
-	Pack(logFr, Fill(FILL_BOTH), Expand(true), Pady(1))
+	Pack(logFr, Fill(FILL_X), Side(TOP), Pady(1))
 	logText = logFr.Text(
 		Font("Courier", 8),
 		Background(bgCell),
 		Foreground(fgText),
+		Height(4),
 		Wrap("word"),
 		State("disabled"),
 	)
-	scr := logFr.Scrollbar(Orient(VERTICAL), Command(func(e *Event) { e.Yview(logText) }))
-	logText.Configure(Yscrollcommand(func(e *Event) { e.ScrollSet(scr) }))
-	Pack(logText, Side(LEFT), Fill(FILL_BOTH), Expand(true))
-	Pack(scr, Side(RIGHT), Fill(FILL_Y))
+	logText.Configure(Yscrollcommand(func(e *Event) { /* read-only */ }))
+	Pack(logText, Fill(FILL_BOTH), Expand(true))
 
-	// Mode indicator
+	// 2. Control Information FreeText (IDC_CTRL_INFORMATION equivalent)
+	//    - bordered read-only Text widget
+	//    - shows current control state (mode, step, control no, args) as free text
+	ctrlInfoLbl := gr.Label(
+		Txt("Control Info"),
+		Font(HELVETICA, 9, BOLD),
+		Foreground(fgAccent), Background(bgPanel), Anchor(W), Pady(2),
+	)
+	Pack(ctrlInfoLbl, Fill(FILL_X), Side(TOP))
+	ctrlFr := gr.Frame(Background(bgCell), Relief(SUNKEN), Borderwidth(1))
+	Pack(ctrlFr, Fill(FILL_X), Side(TOP), Pady(1))
+	ctrlInfoText = ctrlFr.Text(
+		Font("Courier", 8),
+		Background(bgCell),
+		Foreground(fgText),
+		Height(4),
+		Wrap("word"),
+		State("disabled"),
+	)
+	Pack(ctrlInfoText, Fill(FILL_BOTH), Expand(true))
+
+	// 3. Mode indicator
 	modeRow := gr.Frame(Background(bgPanel))
 	Pack(modeRow, Fill(FILL_X), Side(TOP), Pady(2))
 	modeHdr := modeRow.Label(
@@ -731,7 +701,7 @@ func buildCenterPanel(parent *FrameWidget) {
 	Pack(modeHdr, Side(LEFT))
 	Pack(modeLbl, Side(LEFT), Padx(2))
 
-	// Save filename + elapsed
+	// 4. Save filename + elapsed
 	saveRow := gr.Frame(Background(bgPanel))
 	Pack(saveRow, Fill(FILL_X), Side(TOP), Pady(2))
 	saveFileHdr := saveRow.Label(
@@ -750,8 +720,6 @@ func buildCenterPanel(parent *FrameWidget) {
 	Pack(saveFileHdr, Side(LEFT))
 	Pack(saveFileLbl, Side(LEFT), Padx(2), Expand(true), Fill(FILL_X))
 	Pack(saveElapsedLbl, Side(LEFT), Padx(2))
-
-	appendLog("DigitShowGo started.")
 }
 
 // ─── Voltage Out section (8 ch) - top data group, below Parameter ─────────────
@@ -954,6 +922,16 @@ func onApplySampTime() {
 }
 
 // ─── Log helper ───────────────────────────────────────────────────────────────
+
+// modeLabel returns the human-readable mode string for the "Mode:" row of the
+// center column.  When no control is running, returns "None" (matching the
+// DigitShowModbus default state).
+func modeLabel(controlOn bool, ctrlType string) string {
+	if !controlOn {
+		return "None"
+	}
+	return ctrlType
+}
 // appendLog can be called from any goroutine; messages are pushed into a channel
 // and rendered by the main-thread ticker.
 func appendLog(msg string) {
@@ -993,7 +971,6 @@ func updateUI() {
 	paramsSnap := appData.params
 	voltsSnap := appData.volts
 	portStr := appData.portStr
-	simMode := appData.simMode
 	controlOn := appData.controlOn
 	savingOn := appData.savingOn
 	saveFile := appData.saveFile
@@ -1003,17 +980,6 @@ func updateUI() {
 	controlNo := appData.controlNo
 	cyclicNo := appData.cyclicNo
 	appData.mu.RUnlock()
-
-	// Update port status label
-	if portStatusLbl != nil {
-		portFg := fgOrange
-		portTxt := "SIM"
-		if !simMode && portStr != "" {
-			portFg = fgGreen
-			portTxt = portStr
-		}
-		portStatusLbl.Configure(Txt(portTxt), Foreground(portFg))
-	}
 
 	// Update raw + physical value labels
 	for i := 0; i < 16; i++ {
@@ -1048,12 +1014,12 @@ func updateUI() {
 		voltValLbls[i].Configure(Txt(fmt.Sprintf("%9.4f", voltsSnap[i])))
 	}
 
-	// Update settings panel
+	// Update settings panel (Current Settings)
 	ctrlTypeCurLbl.Configure(Txt(ctrlType))
 	sampTimeCurLbl.Configure(Txt(sampleTime))
-	stepNoLbl.Configure(Txt(fmt.Sprintf("%d", stepNo)))
-	ctrlNoLbl.Configure(Txt(fmt.Sprintf("%d", controlNo)))
-	cyclicNoLbl.Configure(Txt(fmt.Sprintf("%d", cyclicNo)))
+	// Step No / Control No / Cyclic No / Elapsed are shown via the
+	// ctrlInfoText free-text widget in the center column, so we no longer
+	// need to update the dedicated labels here.
 
 	if savingOn {
 		appData.mu.Lock()
@@ -1063,7 +1029,7 @@ func updateUI() {
 	appData.mu.RLock()
 	elSec := appData.saveElapsed.Seconds()
 	appData.mu.RUnlock()
-	elapsedLbl.Configure(Txt(fmt.Sprintf("%.1f [s]", elSec)))
+	// Elapsed is shown via the "Save: Filename" row (saveElapsedLbl).
 	if saveElapsedLbl != nil {
 		saveElapsedLbl.Configure(Txt(fmt.Sprintf("%.1f [sec]", elSec)))
 	}
@@ -1073,6 +1039,25 @@ func updateUI() {
 			modeTxt = ctrlType
 		}
 		modeLbl.Configure(Txt(modeTxt))
+	}
+
+	// Update Control Information FreeText (IDC_CTRL_INFORMATION equivalent).
+	// Mirrors the C++ pDoc->ControlInfoString() helper.
+	if ctrlInfoText != nil {
+		tkeval.EvalErr(fmt.Sprintf("%s configure -state normal", ctrlInfoText))
+		tkeval.EvalErr(fmt.Sprintf("%s delete 1.0 end", ctrlInfoText))
+		lines := []string{
+			fmt.Sprintf("Mode: %s", modeLabel(controlOn, ctrlType)),
+			fmt.Sprintf("Control On: %v", controlOn),
+			fmt.Sprintf("Saving: %v", savingOn),
+			fmt.Sprintf("Step No: %d   Control No: %d   Cyclic No: %d", stepNo, controlNo, cyclicNo),
+			fmt.Sprintf("Sample Time: %s", sampleTime),
+			fmt.Sprintf("Port: %s", portStr),
+		}
+		for _, ln := range lines {
+			tkeval.EvalErr(fmt.Sprintf("%s insert end {%s\n}", ctrlInfoText, ln))
+		}
+		tkeval.EvalErr(fmt.Sprintf("%s configure -state disabled", ctrlInfoText))
 	}
 
 	if saveFile != "" {

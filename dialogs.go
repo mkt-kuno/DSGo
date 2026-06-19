@@ -104,7 +104,8 @@ func loadAllConfigs() {
 // makeDialogShell creates a Toplevel window with title and size, returning
 // the top-level widget (for use with `Destroy(top)`) and the body frame.
 func makeDialogShell(title string, w, h int) (top *ToplevelWidget, body *FrameWidget) {
-	top = Toplevel(Title(title), Background(bgMain))
+	top = Toplevel(Background(bgMain))
+	top.WmTitle(title)
 	WmGeometry(top.Window, fmt.Sprintf("%dx%d", w, h))
 	body = top.Frame(Background(bgMain), Padx(8), Pady(8))
 	Pack(body, Fill(FILL_BOTH), Expand(true))
