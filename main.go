@@ -199,7 +199,7 @@ type AppData struct {
 var appData AppData
 
 // ─── Log message channel (worker -> UI thread) ────────────────────────────────
-var logCh = make(chan string, 256)
+var logCh = make(chan string, 1024)
 
 // ─── UI widget references (updated in ticker) ─────────────────────────────────
 var (
@@ -938,7 +938,7 @@ func appendLog(msg string) {
 	select {
 	case logCh <- msg:
 	default:
-		// Channel full - drop oldest by skipping
+		// Channel full - drop the new message (non-blocking send skipped)
 	}
 }
 
@@ -976,10 +976,26 @@ func updateUI() {
 	saveFile := appData.saveFile
 	ctrlType := appData.controlType
 	sampleTime := appData.sampleTime
-	stepNo := appData.stepNo
-	controlNo := appData.controlNo
-	cyclicNo := appData.cyclicNo
+	stepNo := appData.stepCtrl.StepNo
+	controlNo := appData.stepCtrl.ControlNo
+	cyclicNo := appData.stepCtrl.CyclicNo
 	appData.mu.RUnlock()
+
+	// Sync combobox selections back to Go strings (Textvariable is one-way in tk9.0)
+	if comboCtrlType != nil {
+		if s := tkeval.EvalErr(fmt.Sprintf("%s get", comboCtrlType.Window)); s != "" {
+			appData.mu.Lock()
+			appData.controlType = s
+			appData.mu.Unlock()
+		}
+	}
+	if comboSampTime != nil {
+		if s := tkeval.EvalErr(fmt.Sprintf("%s get", comboSampTime.Window)); s != "" {
+			appData.mu.Lock()
+			appData.sampleTime = s
+			appData.mu.Unlock()
+		}
+	}
 
 	// Update raw + physical value labels
 	for i := 0; i < 16; i++ {
@@ -1088,48 +1104,77 @@ func updateUI() {
 }
 
 // ─── Background Modbus / simulation worker ────────────────────────────────────
+// Single loop with a `sim` flag - `consumeReconnect()` is checked on every
+// iteration so the user can hot-swap between a real port and simulation mode
+// without us having to exit and respawn the goroutine.  The previous design
+// had a separate `simLoop()` that was an unbounded `for {}` and silently
+// dropped the Reconnect request once the worker entered it.
 func modbusWorker() {
 	appendLog(fmt.Sprintf("[worker] probing serial ports (preferred: %s)...", preferredPort))
 	port, portName := findPort()
-	if port == nil {
+	sim := port == nil
+	if sim {
 		appData.mu.Lock()
 		appData.simMode = true
 		appData.portStr = "SIM"
 		appData.mu.Unlock()
 		appendLog("[worker] no usable port - simulation mode")
-		simLoop()
-		return
+	} else {
+		defer port.Close()
+		appData.mu.Lock()
+		appData.simMode = false
+		appData.portStr = portName
+		appData.mu.Unlock()
 	}
-	defer port.Close()
 
-	appData.mu.Lock()
-	appData.simMode = false
-	appData.portStr = portName
-	appData.mu.Unlock()
-
+	t0 := time.Now()
 	consecutiveErrors := 0
 	tick := 0
+
 	for {
 		if consumeReconnect() {
-			appendLog("[modbus] user-requested reconnect")
-			port.Close()
-			time.Sleep(200 * time.Millisecond)
-			newPort, newName := findPort()
-			if newPort == nil {
-				appData.mu.Lock()
-				appData.simMode = true
-				appData.portStr = "SIM (reconnect)"
-				appData.mu.Unlock()
-				simLoop()
-				return
+			if sim {
+				appendLog("[worker] reconnect requested (was in sim mode)")
+			} else {
+				appendLog("[modbus] user-requested reconnect")
+				port.Close()
 			}
-			port = newPort
-			portName = newName
+			time.Sleep(200 * time.Millisecond)
+			port, portName = findPort()
+			sim = port == nil
 			consecutiveErrors = 0
 			appData.mu.Lock()
-			appData.simMode = false
-			appData.portStr = portName
+			appData.simMode = sim
+			if sim {
+				appData.portStr = "SIM (reconnect)"
+			} else {
+				appData.portStr = portName
+			}
 			appData.mu.Unlock()
+			continue
+		}
+
+		if sim {
+			t := time.Since(t0).Seconds()
+			var raw [16]int16
+			for i := range raw {
+				v := math.Sin(t*0.3+float64(i)*0.45) * float64(26000+i*400)
+				raw[i] = int16(v)
+			}
+			phys := computePhys(raw)
+			params := computeParams(phys)
+
+			appData.mu.Lock()
+			appData.raw = raw
+			appData.phys = phys
+			appData.params = params
+			appData.mu.Unlock()
+
+			tick++
+			if tick == 10 {
+				appendLog("[sim] simulation stabilised.")
+			}
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
@@ -1145,12 +1190,14 @@ func modbusWorker() {
 				time.Sleep(500 * time.Millisecond)
 				newPort, newName := findPort()
 				if newPort == nil {
+					port = nil
+					sim = true
+					consecutiveErrors = 0
 					appData.mu.Lock()
 					appData.simMode = true
 					appData.portStr = "SIM (err)"
 					appData.mu.Unlock()
-					simLoop()
-					return
+					continue
 				}
 				port = newPort
 				portName = newName
@@ -1172,9 +1219,6 @@ func modbusWorker() {
 		appData.raw = raw
 		appData.phys = phys
 		appData.params = params
-		for i := range appData.volts {
-			appData.volts[i] = phys[i%16] * 5.0
-		}
 		appData.mu.Unlock()
 
 		tick++
@@ -1185,39 +1229,12 @@ func modbusWorker() {
 	}
 }
 
-func simLoop() {
-	t0 := time.Now()
-	tick := 0
-	for {
-		t := time.Since(t0).Seconds()
-		var raw [16]int16
-		for i := range raw {
-			v := math.Sin(t*0.3+float64(i)*0.45) * float64(26000+i*400)
-			raw[i] = int16(v)
-		}
-		phys := computePhys(raw)
-		params := computeParams(phys)
-
-		appData.mu.Lock()
-		appData.raw = raw
-		appData.phys = phys
-		appData.params = params
-		for i := range appData.volts {
-			appData.volts[i] = phys[i%16] * 5.0
-		}
-		appData.mu.Unlock()
-
-		tick++
-		if tick == 10 {
-			appendLog("[sim] simulation stabilised.")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 // ─── Physical / parameter computation ────────────────────────────────────────
 // computePhys applies the per-channel quadratic calibration y = a*x^2 + b*x + c
-// to the raw int16 sample, where x is the normalised value (-1..+1).
+// to the raw int16 sample.  x is the RAW int16 value in [-32768, +32767], not a
+// normalised [-1, +1] value — matching DigitShowModbus's
+// `CDigitShowModbusDoc::AioCalculatePhysical` exactly so a calibration JSON
+// from the C++ side works without rescaling.
 func computePhys(raw [16]int16) [16]float64 {
 	appData.mu.RLock()
 	cal := appData.cal
@@ -1225,7 +1242,7 @@ func computePhys(raw [16]int16) [16]float64 {
 
 	var phys [16]float64
 	for i, r := range raw {
-		x := float64(r) / 32767.0
+		x := float64(r)
 		c := cal[i]
 		phys[i] = c.A*x*x + c.B*x + c.C
 	}
@@ -1330,6 +1347,9 @@ func readModbus(port serial.Port) ([16]int16, error) {
 	req[6] = byte(crc)
 	req[7] = byte(crc >> 8)
 
+	if err := port.ResetInputBuffer(); err != nil {
+		return [16]int16{}, fmt.Errorf("reset input buffer: %w", err)
+	}
 	if _, err := port.Write(req[:]); err != nil {
 		return [16]int16{}, fmt.Errorf("write: %w", err)
 	}
@@ -1359,6 +1379,9 @@ func readFull(port serial.Port, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
 		n, err := port.Read(buf[total:])
+		if n == 0 {
+			return total, fmt.Errorf("read timeout after %d/%d bytes", total, len(buf))
+		}
 		total += n
 		if err != nil {
 			return total, err

@@ -306,7 +306,7 @@ func onZeroCalibration(idx int, a, b, c, y [16]*EntryWidget) {
 	r := appData.raw[idx]
 	cal := appData.cal[idx]
 	appData.mu.RUnlock()
-	x := float64(r) / 32767.0
+	x := float64(r)
 	phy := cal.A*x*x + cal.B*x + cal.C
 	newC := cal.C - phy
 	appData.mu.Lock()
@@ -389,7 +389,7 @@ func onOutputVoltage(e [8]*EntryWidget) {
 		appData.volts[i] = entryGetFloat(e[i])
 	}
 	appData.mu.Unlock()
-	appendLog("[dac] voltage out applied (UI-side echo)")
+	appendLog("[dac] voltage out applied (UI-side echo) - DAC writes not implemented in this build - values saved to UI only")
 }
 
 func onRefreshVoltage(e [8]*EntryWidget) {
