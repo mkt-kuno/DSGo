@@ -24,7 +24,8 @@ The minimum supported screen size is **1600x900**.
   any other detected port, then to simulation
 - **16-ch raw / 16-ch physical / 32-ch parameter** display with raw
   value warning colours (yellow / red)
-- **8-ch Voltage Out** display below Parameter
+- **8-ch Voltage Out** display below Parameter (with FC16 Modbus write
+  to the AO board on `DA Output → Voltage Output → Output`)
 - **Live mini-plot** (Tk canvas strip, low rate)
 - **spdlog latest** text area + Mode indicator + Save: Filename row
 - **Current Settings / Basic Settings** with Apply buttons
@@ -58,16 +59,14 @@ The minimum supported screen size is **1600x900**.
 2. **SQLite** — replace JSON / TSV with sqlite-backed logging.
 3. **WebServer** — remote control surface (mirrors DigitShowModbus's
    built-in web server).
-4. **Real DA voltage output** — currently the Output button is a UI
-   echo only; the board write path is not wired yet.
-5. **TSV saving** — file format and saving-on-button logic.
-6. **Step Control program execution** — parse and run a step list
+4. **TSV saving** — file format and saving-on-button logic.
+5. **Step Control program execution** — parse and run a step list
    (currently a stub).
-7. **Specimen size recomputation** — the Before/After Consolidation
+6. **Specimen size recomputation** — the Before/After Consolidation
    math (`LoadInput_And_Calc_AllStage` in the C++ side).
-8. **Pre-Consolidation control loop** — actual motor / load control.
-9. **YAML profile switching** — `config.yaml` style (DigitShowModbus).
-10. **ShutdownBlockReason on Windows** — graceful close during a long
+7. **Pre-Consolidation control loop** — actual motor / load control.
+8. **YAML profile switching** — `config.yaml` style (DigitShowModbus).
+9. **ShutdownBlockReason on Windows** — graceful close during a long
     test.
 
 ## Files

@@ -98,19 +98,52 @@ following are documented intentional deviations:
     `config.yaml` to switch control profiles; the Go port uses the
     Basic Settings panel (ControlType/SamplingTime combobox) only.
 
+11. **Linear AO calibration reuses `CalCoeff` quadratic type** instead
+    of introducing a new `CalCoeffLin`.  The C++ side
+    (`DigitShowModbus.h:250-253`) has two separate structs - AI is
+    quadratic (`a*x^2 + b*x + c`) and AO is linear (`a*x + b`).
+    The Go port stores both in the same `CalCoeff{A, B, C}` struct
+    to keep the on-disk JSON schema uniform, and the AO write path
+    only reads `A` and `B` (the `C` field is always 0 for AO).  See
+    the `aOutCal` docstring on `AppData` in `main.go`.
+
+12. **FC16 (Write Multiple Registers) used for AO output** instead
+    of FC06 (Write Single Register).  The C++ reference writes all
+    8 AO channels in a single FC16 transaction at base address
+    `0x0000` (`DigitShowModbusDoc.cpp:254, 271`).  The Go port
+    matches that: `writeModbusAOs(port, modbusAOBaseAddr, regs)`
+    with `modbusAOBaseAddr = 0x0000`.  The base is a const so
+    firmwares that expect a different mapping (e.g. `0x0100 + ch*2`)
+    can be supported by changing one line.  Register scaling
+    (`int16(raw*1000)`, clamp `[0, 10]V`) matches
+    `DigitShowModbusDoc.cpp:317-321` (`AioUpdateOut`).
+
+13. **AO writes go through a one-slot worker queue** rather than
+    the UI thread touching `serial.Port` directly.  The
+    `modbusWorker` owns the port; AO write requests from the
+    `Voltage Output` dialog are funnelled through `queueAOOutWrite`
+    and serviced between FC04 reads.  This keeps the serial port
+    access single-threaded and means write latency is bounded by
+    one worker tick (100 ms) rather than racing the read loop.
+
 ## TODOs in Priority Order
 
 See `README.md` for the end-user facing list.  In rough order of
 priority for further development:
 
-1. **Real DA voltage output** - currently UI echoes the values only
-2. **TSV saving** - file format and saving-on-button logic
-3. **Step Control program execution** - parse and run a step list
-4. **Specimen size recomputation** - the Before/After Consolidation math
-5. **Pre-Consolidation control loop** - actual motor/load control
-6. **Plot (Chart + LMDB?)** - high-rate capture and rewind
-7. **SQLite logging** - replace TSV with sqlite
-8. **WebServer** - remote control surface
+1. **TSV saving** - file format and saving-on-button logic
+2. **Step Control program execution** - parse and run a step list
+3. **Specimen size recomputation** - the Before/After Consolidation math
+4. **Pre-Consolidation control loop** - actual motor/load control
+   (will populate `appData.aOutCal` with the C++ defaults for the
+   natural-unit channels and start issuing motor / pressure / torsional
+   FC16 writes from the worker on every tick)
+5. **Plot (Chart + LMDB?)** - high-rate capture and rewind
+6. **SQLite logging** - replace TSV with sqlite
+7. **WebServer** - remote control surface
+8. **AO calibration editor dialog** - currently `aOutCal` is hard-coded
+   to identity (A=1, B=0) in `main()`.  Add a UI for editing the
+   per-channel AO coefficients similar to the AI Calibration dialog.
 
 ## Cross-Thread Notes
 

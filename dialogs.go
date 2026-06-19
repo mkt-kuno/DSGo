@@ -513,13 +513,41 @@ func openVoltageOutDialog() {
 	}
 }
 
+// onOutputVoltage snapshots the 8 user-typed voltage fields into appData,
+// converts each value to the 16-bit register the AO board expects, and
+// queues an FC16 multi-register Modbus write for the worker to dispatch.
+// The math matches DigitShowModbusDoc.cpp:310-323 (AioUpdateOut):
+//
+//	raw    = clamp(A*V + B, 0, 10)        // V
+//	reg[i] = uint16(raw * 1000)           // 0..10000 DAC counts
+//
+// In sim mode (no real port) the worker just logs the would-be frame.
 func onOutputVoltage(e [8]*EntryWidget) {
+	var (
+		registers [8]uint16
+		voltsSnap [8]float64
+	)
 	appData.mu.Lock()
 	for i := 0; i < 8; i++ {
 		appData.volts[i] = entryGetFloat(e[i])
+		voltsSnap[i] = appData.volts[i]
+		cal := appData.aOutCal[i]
+		raw := cal.A*appData.volts[i] + cal.B
+		if raw < 0 {
+			raw = 0
+		}
+		if raw > 10 {
+			raw = 10
+		}
+		registers[i] = uint16(raw * 1000)
 	}
 	appData.mu.Unlock()
-	appendLog("[dac] voltage out applied (UI-side echo) - DAC writes not implemented in this build - values saved to UI only")
+
+	queueAOOutWrite(registers)
+	appendLog(fmt.Sprintf("[dac] voltage out queued: V=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f] reg=%v",
+		voltsSnap[0], voltsSnap[1], voltsSnap[2], voltsSnap[3],
+		voltsSnap[4], voltsSnap[5], voltsSnap[6], voltsSnap[7],
+		registers))
 }
 
 func onRefreshVoltage(e [8]*EntryWidget) {

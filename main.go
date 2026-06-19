@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -120,7 +121,12 @@ var plotAxisYChoices = []string{"00", "01", "02", "03", "04", "05", "06", "07", 
 var plotTargetChoices = []string{"Raw", "Phy", "Par"}
 
 // ─── Shared application data ──────────────────────────────────────────────────
-// Calibration: per-channel quadratic y = a*x^2 + b*x + c
+// Calibration: per-channel quadratic y = a*x^2 + b*x + c.
+//
+// The same struct is reused for both AI (quadratic) and AO (linear) channels
+// to keep the on-disk JSON schema simple.  For AO, only A and B are used
+// (matches the C++ DigitShowModbus.h:250-253 AO struct which has no C
+// term); C is always 0 there.  See AOutCal docstring on AppData.
 type CalCoeff struct{ A, B, C float64 }
 
 // Specimen stage: Initial / Present / Before / After consolidation
@@ -197,17 +203,40 @@ type AppData struct {
 	motorDir   float64
 
 	// Persisted configuration
-	cal       [16]CalCoeff
-	specimen  SpecimenData
-	preCon    PreConParams
-	stepCtrl  StepCtrl
-	envVars   EnvVars
+	cal      [16]CalCoeff
+	// aOutCal is the per-channel D/A (AO) calibration.  Eight channels
+	// matching DigitShowModbus.h:44 (DSM_AO_CH_MAX = 8) and the order of
+	// the `volts` array above: 0 Motor On/Off, 1 Motor Up/Down, 2 Motor
+	// Speed, 3 EP Cell, 4 EP Axis, 5 Torsional On/Off, 6 Torsional
+	// CW/CCW, 7 Torsional Speed.
+	//
+	// The C++ AO struct (DigitShowModbus.h:250-253) is linear
+	// `out = A*V + B` (no C term).  We store it in the same CalCoeff
+	// struct as the AI quadratic for JSON simplicity, but the write
+	// path reads only A and B - C is always 0 here.
+	aOutCal  [8]CalCoeff
+	specimen SpecimenData
+	preCon   PreConParams
+	stepCtrl StepCtrl
+	envVars  EnvVars
 }
 
 var appData AppData
 
 // ─── Log message channel (worker -> UI thread) ────────────────────────────────
 var logCh = make(chan string, 1024)
+
+// ─── AO write queue (UI thread -> modbus worker) ──────────────────────────────
+// The modbusWorker owns the serial port and runs the 100 ms FC04 read loop,
+// so all FC16 AO writes from the UI thread (Voltage Output dialog) are
+// funnelled through this single-producer/single-consumer queue.  We keep
+// only the most recent request - new requests overwrite pending ones - so
+// rapid clicks never starve the read loop.
+var aoWriteState = struct {
+	sync.Mutex
+	pending [8]uint16
+	dirty   bool
+}{}
 
 // ─── UI widget references (updated in ticker) ─────────────────────────────────
 var (
@@ -317,6 +346,16 @@ func main() {
 	appData.envVars.Values[14] = 0
 	appData.envVars.Values[15] = 0
 
+	// Default AO calibration: linear out = A*V + B.  We default to identity
+	// (A=1, B=0) so the manual Voltage Output dialog passes the user-typed
+	// volts straight through to the register.  The C++ control loop uses
+	// natural units (RPM, kPa) and applies AOutCal to convert - that path
+	// is not yet ported; when it is, override the defaults here to match
+	// DigitShowModbus.cpp:251-256 (e.g. Motor Speed 0.003333 V/rpm).
+	for i := range appData.aOutCal {
+		appData.aOutCal[i] = CalCoeff{A: 1, B: 0, C: 0}
+	}
+
 	buildMenu()
 
 	App.WmTitle("DigitShowGo v0.1.0 release [Modbus RTU]")
@@ -326,6 +365,7 @@ func main() {
 
 	buildUI()
 	loadConfigsOnStartup()
+	saveEnvVarsIfMissing()
 
 	go modbusWorker()
 	go controlLoop()
@@ -1168,6 +1208,25 @@ func modbusWorker() {
 			continue
 		}
 
+		// Process any pending AO write request from the UI thread.  We do
+		// this BEFORE the FC04 read so a write is serviced within ~one
+		// tick of the user's "Output" click.  In sim mode we just log
+		// the would-be frame and return - never touch the (non-existent)
+		// port.  A write failure does NOT count against consecutiveErrors
+		// (that's a read-side concern only) - we just log and let the user
+		// click "Output" again.
+		if regs, ok := consumeAOOutWrite(); ok {
+			if sim {
+				appendLog(fmt.Sprintf("[dac-sim] would write %d AO registers @ 0x%04x: %v", len(regs), modbusAOBaseAddr, regs))
+			} else {
+				if err := writeModbusAOs(port, modbusAOBaseAddr, regs[:]); err != nil {
+					appendLog(fmt.Sprintf("[dac] AO write failed: %v (next request will retry)", err))
+				} else {
+					appendLog(fmt.Sprintf("[dac] wrote %d AO registers OK", len(regs)))
+				}
+			}
+		}
+
 		if sim {
 			t := time.Since(t0).Seconds()
 			var raw [16]int16
@@ -1553,10 +1612,41 @@ func containsString(s []string, v string) bool {
 
 // ─── Modbus RTU FC04 read ─────────────────────────────────────────────────────
 const (
-	modbusSlaveID = 1
-	modbusStart   = 0
-	modbusCount   = 16
+	modbusSlaveID  = 1
+	modbusStart    = 0
+	modbusCount    = 16
+	// modbusAOBaseAddr is the AO board's base register address.
+	// DigitShowModbus writes all 8 AO channels starting at 0x00 using
+	// `modbus_write_registers(ctx->Modbus.device, 0x00, ao_channel_limit, ...)`
+	// (see DigitShowModbusDoc.cpp:254, 271).  If your firmware expects a
+	// different base (e.g. 0x0100 + ch*2), change this constant.
+	modbusAOBaseAddr uint16 = 0x0000
 )
+
+// queueAOOutWrite enqueues the given 8 AO register values for the modbus
+// worker to write at the next loop iteration.  If a previous request is
+// still pending, it is silently overwritten - the worker always sees the
+// most recent values.
+func queueAOOutWrite(regs [8]uint16) {
+	aoWriteState.Lock()
+	aoWriteState.pending = regs
+	aoWriteState.dirty = true
+	aoWriteState.Unlock()
+}
+
+// consumeAOOutWrite returns the most recently queued AO register values
+// (and true) if a write is pending, or a zero array (and false) otherwise.
+// The pending flag is cleared atomically so the next call returns false
+// until queueAOOutWrite is called again.
+func consumeAOOutWrite() (regs [8]uint16, ok bool) {
+	aoWriteState.Lock()
+	defer aoWriteState.Unlock()
+	if !aoWriteState.dirty {
+		return [8]uint16{}, false
+	}
+	aoWriteState.dirty = false
+	return aoWriteState.pending, true
+}
 
 func readModbus(port serial.Port) ([16]int16, error) {
 	req := [8]byte{modbusSlaveID, 0x04, 0, modbusStart, 0, modbusCount}
@@ -1607,6 +1697,76 @@ func readFull(port serial.Port, buf []byte) (int, error) {
 	return total, nil
 }
 
+// ─── Modbus RTU FC16 write (Write Multiple Registers) ───────────────────────
+//
+// Frame layout (matches Utils_ModbusRTU.cpp:247-273 in the C++ side):
+//
+//	[slave] [0x10] [addr_hi] [addr_lo] [cnt_hi] [cnt_lo] [byte_cnt]
+//	[data_hi] [data_lo] ...   (cnt * 2 bytes)
+//	[CRC_lo] [CRC_hi]
+//
+// Response: 8 bytes (slave, FC, addr_hi, addr_lo, cnt_hi, cnt_lo, CRC_lo, CRC_hi).
+// We use this instead of FC06 (single register) because the C++ reference
+// writes all 8 AO channels in one transaction, which is the actual hardware
+// contract the AIO board's firmware expects.
+func writeModbusAOs(port serial.Port, addr uint16, values []uint16) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) > 123 {
+		return fmt.Errorf("writeModbusAOs: too many registers (max 123, got %d)", len(values))
+	}
+
+	dataBytes := len(values) * 2
+	frameLen := 7 + dataBytes + 2
+	req := make([]byte, frameLen)
+	req[0] = modbusSlaveID
+	req[1] = 0x10 // FC16 Write Multiple Registers
+	req[2] = byte(addr >> 8)
+	req[3] = byte(addr & 0xFF)
+	req[4] = byte(len(values) >> 8)
+	req[5] = byte(len(values) & 0xFF)
+	req[6] = byte(dataBytes)
+	for i, v := range values {
+		req[7+i*2] = byte(v >> 8)
+		req[7+i*2+1] = byte(v & 0xFF)
+	}
+	crc := crc16(req[:7+dataBytes])
+	req[7+dataBytes] = byte(crc)
+	req[7+dataBytes+1] = byte(crc >> 8)
+
+	// Drain any stale bytes (e.g. the previous FC04 read's tail) before
+	// sending.  A failure here is non-fatal - log but continue.
+	if err := port.ResetInputBuffer(); err != nil {
+		appendLog(fmt.Sprintf("[dac] ResetInputBuffer: %v (continuing)", err))
+	}
+	if _, err := port.Write(req); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+
+	const expected = 8
+	rsp := make([]byte, expected)
+	n, err := readFull(port, rsp)
+	if err != nil || n != expected {
+		return fmt.Errorf("read response: got %d/%d bytes, err=%v", n, expected, err)
+	}
+	if rsp[0] != modbusSlaveID || rsp[1] != 0x10 {
+		return fmt.Errorf("invalid response header: %02x %02x", rsp[0], rsp[1])
+	}
+	rxCRC := uint16(rsp[6]) | uint16(rsp[7])<<8
+	calcCRC := crc16(rsp[:6])
+	if rxCRC != calcCRC {
+		return fmt.Errorf("CRC mismatch: got %04x, calc %04x", rxCRC, calcCRC)
+	}
+	rspAddr := uint16(rsp[2])<<8 | uint16(rsp[3])
+	rspCount := uint16(rsp[4])<<8 | uint16(rsp[5])
+	if rspAddr != addr || rspCount != uint16(len(values)) {
+		return fmt.Errorf("unexpected response: addr=%04x count=%d (expected addr=%04x count=%d)",
+			rspAddr, rspCount, addr, len(values))
+	}
+	return nil
+}
+
 // ─── CRC16 (Modbus, poly 0xA001) ──────────────────────────────────────────────
 func crc16(data []byte) uint16 {
 	crc := uint16(0xFFFF)
@@ -1621,4 +1781,25 @@ func crc16(data []byte) uint16 {
 		}
 	}
 	return crc
+}
+
+// ─── First-run envvars.json seed ──────────────────────────────────────────────
+// On first run envvars.json doesn't exist yet, so loadJSON returns an
+// error and the seeded defaults in main()'s envVars init stay in memory
+// but never reach disk.  This helper writes the defaults once so the file
+// is present from the start, matching the C++ side's behaviour where
+// config.yaml is created on first run.
+func saveEnvVarsIfMissing() {
+	path := configPath("envvars.json")
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	appData.mu.RLock()
+	env := appData.envVars
+	appData.mu.RUnlock()
+	if err := saveJSON("envvars.json", envVarsFile{Env: env}); err != nil {
+		appendLog("[env] seed envvars.json failed: " + err.Error())
+		return
+	}
+	appendLog("[env] seeded envvars.json with default values")
 }
