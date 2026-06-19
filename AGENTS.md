@@ -7,13 +7,6 @@
 control & monitoring.  It is a desktop GUI for Windows, written in Go with
 the `modernc.org/tk9.0` (Tk 9.0) bindings.
 
-The reference C++ MFC implementations live at:
-- `C:\Users\mkt-kuno\Desktop\DigitShowBasicM` (simple)
-- `C:\Users\mkt-kuno\Desktop\DigitShowModbus` (high-end)
-- `C:\Users\mkt-kuno\Desktop\DigitShowDoc` (LaTeX manual + screenshots)
-- `C:\Users\mkt-kuno\Desktop\latex_doctor_by_dissertation\6th\img\digitshowmodbus`
-  (newest screenshots)
-
 ## Build & Run
 
 ```sh

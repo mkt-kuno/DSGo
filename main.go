@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	. "modernc.org/tk9.0"
@@ -15,6 +14,54 @@ import (
 	tkeval "modernc.org/tk9.0/extensions/eval"
 
 	"go.bug.st/serial"
+
+	"dsgo/dialogs"
+)
+
+// ─── 型エイリアス ─────────────────────────────────────────────────────────────
+//
+// ダイアログ用に dialogs パッケージへ移した型は本パッケージでもそのまま
+// 名前で使えるようにエイリアスを張る。値型の構造体なので型エイリアスで
+// 透過的に扱える。
+type (
+	CalCoeff      = dialogs.CalCoeff
+	SpecimenStage = dialogs.SpecimenStage
+	SpecimenData  = dialogs.SpecimenData
+	PreConParams  = dialogs.PreConParams
+	StepCtrl      = dialogs.StepCtrl
+	EnvVars       = dialogs.EnvVars
+)
+
+// ─── 色/テーブル定数のエイリアス ─────────────────────────────────────────────
+//
+// 旧 main.go 内に直書きされていた色とチャンネル名テーブルは dialogs
+// パッケージへ移した。本ファイル中の既存参照を最小コストで生かすため、
+// 同じ値の var をここで再エクスポートする。
+var (
+	bgMain   = dialogs.BgMain
+	bgPanel  = dialogs.BgPanel
+	bgGroup  = "#0a2f2f"
+	bgCell   = dialogs.BgCell
+	bgCellHi = "#1a4a4a"
+	bgBtn    = dialogs.BgBtn
+	bgBtnOn  = "#0d3b3b"
+	bgGreen  = "#69f0ae"
+	bgRed    = dialogs.BgRed
+	fgText   = dialogs.FgText
+	fgLabel  = dialogs.FgLabel
+	fgDim    = dialogs.FgDim
+	fgAccent = dialogs.FgAccent
+	fgGreen  = "#69f0ae"
+	fgOrange = "#ffb74d"
+	fgCrit   = "#ef9a9a"
+	fgWarn   = dialogs.FgWarn
+	fgTitle  = "#ffffff"
+
+	rawChNames  = dialogs.RawChNames
+	physChNames = dialogs.PhysChNames
+	physUnits   = dialogs.PhysUnits
+	voltChNames = dialogs.VoltChNames
+	voltUnits   = dialogs.VoltUnits
 )
 
 func toInt(s string) int {
@@ -22,53 +69,8 @@ func toInt(s string) int {
 	return n
 }
 
-// ─── Colors ──────────────────────────────────────────────────────────────────
-// MFC "Digital" theme: dark teal background with white text (matches screenshots)
-const (
-	bgMain   = "#0d3b3b" // dark teal background
-	bgHdr    = "#0d3b3b"
-	bgPanel  = "#0d3b3b"
-	bgGroup  = "#0a2f2f"
-	bgCell   = "#0a2f2f"
-	bgCellHi = "#1a4a4a"
-	bgBtn    = "#0a2f2f"
-	bgBtnOn  = "#0d3b3b"
-	bgGreen  = "#69f0ae"
-	bgRed    = "#ef5350"
-	fgText   = "#ffffff"
-	fgLabel  = "#cccccc"
-	fgDim    = "#888888"
-	fgAccent = "#4fc3f7"
-	fgGreen  = "#69f0ae"
-	fgOrange = "#ffb74d"
-	fgCrit   = "#ef9a9a"
-	fgWarn   = "#fff176"
-	fgTitle  = "#ffffff"
-)
-
-// ─── Channel tables ───────────────────────────────────────────────────────────
-// Mirrors the MFC DigitShowBasicM reference.
-var rawChNames = [16]string{
-	"LoadCell", "LVDT", "LDT1", "LDT2",
-	"none", "none", "none", "none",
-	"HCDPT", "LCDPT", "none", "none",
-	"none", "none", "none", "none",
-}
-
-var physChNames = [16]string{
-	"Load", "ExtDisp", "LDT1Disp", "LDT2Disp",
-	"none", "none", "none", "none",
-	"EffCellP", "VolChange", "none", "none",
-	"none", "none", "none", "none",
-}
-
-var physUnits = [16]string{
-	"N", "mm", "mm", "mm",
-	"--", "--", "--", "--",
-	"kPa", "mm3", "--", "--",
-	"--", "--", "--", "--",
-}
-
+// paramNames / paramUnits はメインの Parameter セクション（32ch）ヘッダ表示用。
+// ダイアログでは使わないので本パッケージに残す。
 var paramNames = [32]string{
 	"q", "p'", "sigma'(a)", "sigma'(r)",
 	"AxialStrain", "RadialStrain", "VolumetricStrain", "LDT1",
@@ -91,16 +93,6 @@ var paramUnits = [32]string{
 	"mm", "mm", "mm2", "mm3",
 }
 
-var voltChNames = [8]string{
-	"Motor ON/OFF", "Motor UP/DOWN", "Motor Speed", "EP Cell Pressure",
-	"EP Axis Pressure", "Torsional ON/OFF", "Torsional CW/CCW", "Torsional Speed",
-}
-
-var voltUnits = [8]string{
-	"on/off", "on/off", "rpm", "kPa",
-	"kPa", "on/off", "dir", "rpm",
-}
-
 // ─── Control type / sampling time options ─────────────────────────────────────
 // Per DigitShowModbus's main menu, only three top-level control flows are
 // exposed in the dropdown: None, Pre-Consolidation, Step Control.  All the
@@ -119,144 +111,18 @@ var plotAxisXChoices = []string{"time", "00", "01", "02", "03", "04", "05", "06"
 var plotAxisYChoices = []string{"00", "01", "02", "03", "04", "05", "06", "07", "08", "09"}
 var plotTargetChoices = []string{"Raw", "Phy", "Par"}
 
-// ─── Shared application data ──────────────────────────────────────────────────
-// Calibration: per-channel quadratic y = a*x^2 + b*x + c.
+// ─── 共有アプリケーションデータ ──────────────────────────────────────────────
 //
-// The same struct is reused for both AI (quadratic) and AO (linear) channels
-// to keep the on-disk JSON schema simple.  For AO, only A and B are used
-// (matches the C++ DigitShowModbus.h:250-253 AO struct which has no C
-// term); C is always 0 there.  See AOutCal docstring on AppData.
+// AppData 構造体とそこから参照される型 (CalCoeff, SpecimenData, PreConParams,
+// StepCtrl, EnvVars) は dialogs パッケージへ移動した。本ファイル冒頭の
+// type エイリアスで透過的に参照できる。
 //
-// JSON tags are lowercase (`a`, `b`, `c`) to match the on-disk format
-// written by DigitShowModbus's nlohmann::json serialiser
-// (Dialog_CalibrationValue.cpp:193-195, Utils_Various.cpp:97-99, 148-150).
-type CalCoeff struct {
-	A float64 `json:"a"`
-	B float64 `json:"b"`
-	C float64 `json:"c"`
-}
+// appData は package main のグローバルで、main() 内で dialogs.Setup へ
+// 登録されてから modbusWorker / controlLoop / UI ticker などが触る。
+var appData dialogs.AppData
 
-// Specimen stage: Initial / Present / Before / After consolidation.
-//
-// JSON tags match Dialog_Specimen.cpp:261-287 (height/area/volume/diameter/
-// ldt_1/ldt_2).  The Go field names stay exported; the on-disk keys are
-// lowercase to match what `j["present"]["diameter"] = ...` writes in C++.
-type SpecimenStage struct {
-	Diameter float64 `json:"diameter"`
-	Height   float64 `json:"height"`
-	Area     float64 `json:"area"`
-	Volume   float64 `json:"volume"`
-	LDT1     float64 `json:"ldt_1"`
-	LDT2     float64 `json:"ldt_2"`
-}
-
-type SpecimenData struct {
-	MembraneE  float64       `json:"membrane_youngs_modulus"`
-	MembraneT  float64       `json:"membrane_thickness"`
-	CapWeight  float64       `json:"cap_weight"`
-	Present    SpecimenStage `json:"present"`
-	Initial    SpecimenStage `json:"initial"`
-	BeforeCons SpecimenStage `json:"before"`
-	AfterCons  SpecimenStage `json:"after"`
-}
-
-// PreConsolidation control parameters.
-// JSON keys (`target`, `error`, `motor_speed`) match the DigitShowModbus
-// context names (Context::Control::PreConsolication in DigitShowModbus.h).
-// Note: the C++ side does not serialise PreCon to JSON; the lowercase tags
-// are used for consistency with the rest of the on-disk schema.
-type PreConParams struct {
-	TargetQ  float64 `json:"target"`
-	QError   float64 `json:"error"`
-	MaxSpeed float64 `json:"motor_speed"`
-}
-
-// Step Control
-// Mirrors the C++ Step[DSM_STEPCTRL_STEP_MAX] table in DigitShowModbus.h:46-47
-// with DSM_STEPCTRL_STEP_MAX = 1024 and DSM_STEPCTRL_ARGS_MAX = 16.
-// The on-disk JSON is handled by the stepCtrlFile wrapper in dialogs.go,
-// whose stepCtrlFileEntry already uses lowercase `ctrl` / `args00..args15`
-// tags matching Dialog_StepCtrl.cpp:197-205.
-type StepCtrl struct {
-	CurrentStepNo int               // runtime: which row the motor loop is executing
-	EditStepNo    int               // editable: which row the dialog is editing
-	ControlNo     [1024]int         // per-row control number (1024 rows)
-	Args          [1024][16]float64 // per-row args (1024 rows × 16 args)
-	CyclicNo      int               // runtime: cycle counter of the active cyclic step
-}
-
-// Env variables (read from / written to os.Environ on Apply)
-// JSON keys (`values`, `names`) are lowercase for consistency with the rest
-// of the on-disk schema; C++ does not serialise envvars to JSON.
-type EnvVars struct {
-	Values [16]float64 `json:"values"`
-	Names  [16]string  `json:"names"`
-}
-
-type AppData struct {
-	mu sync.RWMutex
-
-	// Live data
-	raw    [16]int16
-	phys   [16]float64
-	params [32]float64
-	volts  [8]float64
-
-	// Connection state
-	portStr string
-	simMode bool
-
-	// Control state
-	controlOn   bool
-	savingOn    bool
-	saveFile    string
-	saveElapsed time.Duration
-	controlType string
-	sampleTime  string
-	stepNo      int
-	controlNo   int
-	cyclicNo    int
-
-	// Motor output (computed by controlLoop; would be pushed to the DA board
-	// via FC16 in a production build).  motorDir is -1=DOWN, 0=stopped, +1=UP.
-	motorSpeed float64
-	motorDir   float64
-
-	// Persisted configuration
-	cal      [16]CalCoeff
-	// aOutCal is the per-channel D/A (AO) calibration.  Eight channels
-	// matching DigitShowModbus.h:44 (DSM_AO_CH_MAX = 8) and the order of
-	// the `volts` array above: 0 Motor On/Off, 1 Motor Up/Down, 2 Motor
-	// Speed, 3 EP Cell, 4 EP Axis, 5 Torsional On/Off, 6 Torsional
-	// CW/CCW, 7 Torsional Speed.
-	//
-	// The C++ AO struct (DigitShowModbus.h:250-253) is linear
-	// `out = A*V + B` (no C term).  We store it in the same CalCoeff
-	// struct as the AI quadratic for JSON simplicity, but the write
-	// path reads only A and B - C is always 0 here.
-	aOutCal  [8]CalCoeff
-	specimen SpecimenData
-	preCon   PreConParams
-	stepCtrl StepCtrl
-	envVars  EnvVars
-}
-
-var appData AppData
-
-// ─── Log message channel (worker -> UI thread) ────────────────────────────────
+// ─── ログメッセージチャネル (worker -> UI スレッド) ──────────────────────────
 var logCh = make(chan string, 1024)
-
-// ─── AO write queue (UI thread -> modbus worker) ──────────────────────────────
-// The modbusWorker owns the serial port and runs the 100 ms FC04 read loop,
-// so all FC16 AO writes from the UI thread (Voltage Output dialog) are
-// funnelled through this single-producer/single-consumer queue.  We keep
-// only the most recent request - new requests overwrite pending ones - so
-// rapid clicks never starve the read loop.
-var aoWriteState = struct {
-	sync.Mutex
-	pending [8]uint16
-	dirty   bool
-}{}
 
 // ─── UI widget references (updated in ticker) ─────────────────────────────────
 var (
@@ -283,17 +149,17 @@ var (
 	btnSaveOn  *ButtonWidget
 	btnSaveOff *ButtonWidget
 
-	comboCtrlType  *TComboboxWidget
-	comboSampTime  *TComboboxWidget
-	comboXAxisA    *TComboboxWidget
-	comboYAxisA    *TComboboxWidget
-	comboTargetA   *TComboboxWidget
-	comboXAxisB    *TComboboxWidget
-	comboYAxisB    *TComboboxWidget
-	comboTargetB   *TComboboxWidget
+	comboCtrlType *TComboboxWidget
+	comboSampTime *TComboboxWidget
+	comboXAxisA   *TComboboxWidget
+	comboYAxisA   *TComboboxWidget
+	comboTargetA  *TComboboxWidget
+	comboXAxisB   *TComboboxWidget
+	comboYAxisB   *TComboboxWidget
+	comboTargetB  *TComboboxWidget
 
-	plotA       *miniChart
-	plotB       *miniChart
+	plotA *miniChart
+	plotB *miniChart
 
 	logText *TextWidget
 
@@ -307,35 +173,40 @@ var (
 func main() {
 	InitializeExtension("eval")
 
-	appData.controlType = "00:None"
-	appData.sampleTime = "1 sec"
-	appData.saveFile = ""
+	// dialogs サブパッケージに appData ポインタとログコールバックを登録。
+	// すべての Open* ダイアログと Queue/ConsumeAOOutWrite はこの登録後に
+	// 動く。appendLog は UI スレッドの logCh → ticker 経由で描画される。
+	dialogs.Setup(&appData, appendLog)
+
+	appData.ControlType = "00:None"
+	appData.SampleTime = "1 sec"
+	appData.SaveFile = ""
 
 	// Default calibration: identity (a=0, b=1, c=0) so uncalibrated data still
 	// produces the original normalised value until the user dials something in.
-	for i := range appData.cal {
-		appData.cal[i] = CalCoeff{A: 0, B: 1, C: 0}
+	for i := range appData.Cal {
+		appData.Cal[i] = CalCoeff{A: 0, B: 1, C: 0}
 	}
 	// Default specimen (50mm diameter × 100mm height cylinder)
-	appData.specimen.Present.Diameter = 50
-	appData.specimen.Present.Height = 100
-	appData.specimen.Initial = appData.specimen.Present
-	appData.specimen.BeforeCons = appData.specimen.Present
-	appData.specimen.AfterCons = appData.specimen.Present
-	appData.specimen.MembraneE = 0
-	appData.specimen.MembraneT = 0.3
-	appData.specimen.CapWeight = 0
+	appData.Specimen.Present.Diameter = 50
+	appData.Specimen.Present.Height = 100
+	appData.Specimen.Initial = appData.Specimen.Present
+	appData.Specimen.BeforeCons = appData.Specimen.Present
+	appData.Specimen.AfterCons = appData.Specimen.Present
+	appData.Specimen.MembraneE = 0
+	appData.Specimen.MembraneT = 0.3
+	appData.Specimen.CapWeight = 0
 	// Default pre-consolidation
-	appData.preCon = PreConParams{TargetQ: 0, QError: 10, MaxSpeed: 1000}
+	appData.PreCon = PreConParams{TargetQ: 0, QError: 10, MaxSpeed: 1000}
 	// Default step control
-	appData.stepCtrl.CurrentStepNo = 0
-	appData.stepCtrl.EditStepNo = 0
-	appData.stepCtrl.CyclicNo = 0
+	appData.StepCtrl.CurrentStepNo = 0
+	appData.StepCtrl.EditStepNo = 0
+	appData.StepCtrl.CyclicNo = 0
 	// Default environmental variable names (mirrors C++ default)
-	for i := range appData.envVars.Values {
-		appData.envVars.Values[i] = 0
+	for i := range appData.EnvVars.Values {
+		appData.EnvVars.Values[i] = 0
 	}
-	appData.envVars.Names = [16]string{
+	appData.EnvVars.Names = [16]string{
 		"DA02:Motor Speed   a*(gradient)", "DA02:Motor Speed   b*(intercept)",
 		"DA03:EP Cell Pres  a*(gradient)", "DA03:EP Cell Pres  b*(intercept)",
 		"DA04:EP Axis Pres  a*(gradient)", "DA04:EP Axis Pres  b*(intercept)",
@@ -349,22 +220,22 @@ func main() {
 		"none", "none",
 	}
 	// Seed env var values from the C++ defaults (matches calibration/constants)
-	appData.envVars.Values[0] = 0.000333333
-	appData.envVars.Values[1] = 0
-	appData.envVars.Values[2] = 0.001275
-	appData.envVars.Values[3] = 0
-	appData.envVars.Values[4] = 0.00511
-	appData.envVars.Values[5] = 0
-	appData.envVars.Values[6] = 0
-	appData.envVars.Values[7] = 0
-	appData.envVars.Values[8] = 0.5
-	appData.envVars.Values[9] = -0.5
-	appData.envVars.Values[10] = 0.5
-	appData.envVars.Values[11] = 0.05
-	appData.envVars.Values[12] = 50
-	appData.envVars.Values[13] = 100
-	appData.envVars.Values[14] = 0
-	appData.envVars.Values[15] = 0
+	appData.EnvVars.Values[0] = 0.000333333
+	appData.EnvVars.Values[1] = 0
+	appData.EnvVars.Values[2] = 0.001275
+	appData.EnvVars.Values[3] = 0
+	appData.EnvVars.Values[4] = 0.00511
+	appData.EnvVars.Values[5] = 0
+	appData.EnvVars.Values[6] = 0
+	appData.EnvVars.Values[7] = 0
+	appData.EnvVars.Values[8] = 0.5
+	appData.EnvVars.Values[9] = -0.5
+	appData.EnvVars.Values[10] = 0.5
+	appData.EnvVars.Values[11] = 0.05
+	appData.EnvVars.Values[12] = 50
+	appData.EnvVars.Values[13] = 100
+	appData.EnvVars.Values[14] = 0
+	appData.EnvVars.Values[15] = 0
 
 	// Default AO calibration: linear out = A*V + B.  We default to identity
 	// (A=1, B=0) so the manual Voltage Output dialog passes the user-typed
@@ -372,8 +243,8 @@ func main() {
 	// natural units (RPM, kPa) and applies AOutCal to convert - that path
 	// is not yet ported; when it is, override the defaults here to match
 	// DigitShowModbus.cpp:251-256 (e.g. Motor Speed 0.003333 V/rpm).
-	for i := range appData.aOutCal {
-		appData.aOutCal[i] = CalCoeff{A: 1, B: 0, C: 0}
+	for i := range appData.AOutCal {
+		appData.AOutCal[i] = CalCoeff{A: 1, B: 0, C: 0}
 	}
 
 	buildMenu()
@@ -384,7 +255,7 @@ func main() {
 	App.Configure(Padx(0), Pady(0), Background(bgMain))
 
 	buildUI()
-	loadConfigsOnStartup()
+	dialogs.LoadAllConfigs()
 	saveEnvVarsIfMissing()
 
 	go modbusWorker()
@@ -400,46 +271,46 @@ func buildMenu() {
 
 	mApp := menubar.Menu()
 	mApp.AddCommand(Lbl("Calibration Value"), Command(func() {
-		openCalibrationDialog()
+		dialogs.OpenCalibration()
 	}))
 	menubar.AddCascade(Lbl("AD Input"), Mnu(mApp))
 
 	mDA := menubar.Menu()
 	mDA.AddCommand(Lbl("Voltage Output"), Command(func() {
-		openVoltageOutDialog()
+		dialogs.OpenVoltageOut()
 	}))
 	menubar.AddCascade(Lbl("DA Output"), Mnu(mDA))
 
 	mSP := menubar.Menu()
 	mSP.AddCommand(Lbl("Config"), Command(func() {
-		openSpecimenDialog()
+		dialogs.OpenSpecimen()
 	}))
 	menubar.AddCascade(Lbl("Specimen"), Mnu(mSP))
 
 	mCtrl := menubar.Menu()
 	mCtrl.AddCommand(Lbl("Pre-Consolidation"), Command(func() {
-		openPreConsolidationDialog()
+		dialogs.OpenPreConsolidation()
 	}))
 	mCtrl.AddCommand(Lbl("Step Control"), Command(func() {
-		openStepCtrlDialog()
+		dialogs.OpenStepCtrl()
 	}))
 	menubar.AddCascade(Lbl("Control"), Mnu(mCtrl))
 
 	mOther := menubar.Menu()
 	mOther.AddCommand(Lbl("Version"), Command(func() {
-		openVersionDialog()
+		dialogs.OpenVersion()
 	}))
 	mOther.AddCommand(Lbl("Environmental Variables"), Command(func() {
-		openEnvVarDialog()
+		dialogs.OpenEnvVar()
 	}))
 	mOther.AddCommand(Lbl("Web Server Info"), Command(func() {
-		openWebServerInfoDialog()
+		dialogs.OpenWebServerInfo()
 	}))
 	mOther.AddCommand(Lbl("Open Appdata/Log Folder"), Command(func() {
-		openAppDataFolder()
+		dialogs.OpenAppDataFolder()
 	}))
 	mOther.AddCommand(Lbl("Open Temporary Folder"), Command(func() {
-		openTempFolder()
+		dialogs.OpenTempFolder()
 	}))
 	menubar.AddCascade(Lbl("Other"), Mnu(mOther))
 
@@ -596,14 +467,14 @@ func buildParamSection(parent *FrameWidget) {
 
 // ─── Bottom-right: Current Settings + Basic Settings + 4 Start/Stop buttons ────
 // Layout (matches the right column of the DigitShowModbus MainDialog):
-//   1. Current Settings (groupbox)
-//        - ControlType
-//        - SamplingTime
-//   2. Basic Settings (groupbox)
-//        - ControlType [combo] [Apply]
-//        - SamplingTime [combo] [Apply]
-//   3. Start Control / Stop Control   (2x1 buttons)
-//   4. Start Saving / Stop Saving     (2x1 buttons)
+//  1. Current Settings (groupbox)
+//     - ControlType
+//     - SamplingTime
+//  2. Basic Settings (groupbox)
+//     - ControlType [combo] [Apply]
+//     - SamplingTime [combo] [Apply]
+//  3. Start Control / Stop Control   (2x1 buttons)
+//  4. Start Saving / Stop Saving     (2x1 buttons)
 //
 // Step Control fields and Port status row are intentionally not part of the
 // right column - they live in the center column's "Control Information" /
@@ -645,7 +516,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 	)
 	comboCtrlType = row1.TCombobox(
 		Values(controlTypes),
-		Textvariable(appData.controlType),
+		Textvariable(appData.ControlType),
 		Width(14), Font(HELVETICA, 9),
 		State("readonly"),
 	)
@@ -666,7 +537,7 @@ func buildSettingsPanel(parent *FrameWidget) {
 	)
 	comboSampTime = row2.TCombobox(
 		Values(samplingTimes),
-		Textvariable(appData.sampleTime),
+		Textvariable(appData.SampleTime),
 		Width(14), Font(HELVETICA, 9),
 		State("readonly"),
 	)
@@ -719,10 +590,10 @@ func buildSettingsPanel(parent *FrameWidget) {
 
 // ─── Center column: spdlog + Control Information + Mode + Save filename ───────
 // Layout (matches IDR_MAINFRAME / DigitShowModbusView):
-//   1. spdlog (latest ~4 lines) — IDC_SPDLOG_LATEST equivalent
-//   2. Control Information FreeText — IDC_CTRL_INFORMATION equivalent
-//   3. Mode: <text> row
-//   4. Save: Filename [text] [0 sec] row
+//  1. spdlog (latest ~4 lines) — IDC_SPDLOG_LATEST equivalent
+//  2. Control Information FreeText — IDC_CTRL_INFORMATION equivalent
+//  3. Mode: <text> row
+//  4. Save: Filename [text] [0 sec] row
 func buildCenterPanel(parent *FrameWidget) {
 	gr := makeGroup(parent, "spdlog + Control Info")
 
@@ -809,9 +680,9 @@ func buildVoltSection(parent *FrameWidget) {
 
 // ─── Plot panel (right column) with X/Y/Target axis selectors ───────────────
 type miniChart struct {
-	canvas *CanvasWidget
-	data   []float64
-	maxLen int
+	canvas       *CanvasWidget
+	data         []float64
+	maxLen       int
 	bg, fg, axis string
 }
 
@@ -942,45 +813,45 @@ func buildPlotPanel(parent *FrameWidget) {
 // ─── Control button handlers ──────────────────────────────────────────────────
 
 func onStartControl() {
-	appData.mu.Lock()
-	appData.controlOn = true
-	appData.mu.Unlock()
-	appendLog("[control] Start requested. ControlType=" + appData.controlType)
+	appData.Lock()
+	appData.ControlOn = true
+	appData.Unlock()
+	appendLog("[control] Start requested. ControlType=" + appData.ControlType)
 }
 
 func onStopControl() {
-	appData.mu.Lock()
-	appData.controlOn = false
-	appData.motorSpeed = 0
-	appData.motorDir = 0
-	appData.mu.Unlock()
+	appData.Lock()
+	appData.ControlOn = false
+	appData.MotorSpeed = 0
+	appData.MotorDir = 0
+	appData.Unlock()
 	appendLog("[control] Stop requested.")
 }
 
 func onStartSaving() {
 	fn := fmt.Sprintf("data_%s.tsv", time.Now().Format("20060102_150405"))
-	appData.mu.Lock()
-	appData.savingOn = true
-	appData.saveFile = fn
-	appData.saveElapsed = 0
-	appData.mu.Unlock()
+	appData.Lock()
+	appData.SavingOn = true
+	appData.SaveFile = fn
+	appData.SaveElapsed = 0
+	appData.Unlock()
 	appendLog("[save] Start requested. File=" + fn)
 }
 
 func onStopSaving() {
-	appData.mu.Lock()
-	appData.savingOn = false
-	appData.mu.Unlock()
+	appData.Lock()
+	appData.SavingOn = false
+	appData.Unlock()
 	appendLog("[save] Stop requested.")
 }
 
 func onApplyCtrlType() {
-	v := appData.controlType
+	v := appData.ControlType
 	appendLog("[settings] ControlType -> " + v)
 }
 
 func onApplySampTime() {
-	v := appData.sampleTime
+	v := appData.SampleTime
 	appendLog("[settings] SamplingTime -> " + v)
 }
 
@@ -995,6 +866,7 @@ func modeLabel(controlOn bool, ctrlType string) string {
 	}
 	return ctrlType
 }
+
 // appendLog can be called from any goroutine; messages are pushed into a channel
 // and rendered by the main-thread ticker.
 func appendLog(msg string) {
@@ -1028,38 +900,38 @@ func flushLogs() {
 func updateUI() {
 	flushLogs()
 
-	appData.mu.RLock()
-	rawSnap := appData.raw
-	physSnap := appData.phys
-	paramsSnap := appData.params
-	voltsSnap := appData.volts
-	portStr := appData.portStr
-	controlOn := appData.controlOn
-	savingOn := appData.savingOn
-	saveFile := appData.saveFile
-	ctrlType := appData.controlType
-	sampleTime := appData.sampleTime
-	curStep := appData.stepCtrl.CurrentStepNo
+	appData.RLock()
+	rawSnap := appData.Raw
+	physSnap := appData.Phys
+	paramsSnap := appData.Params
+	voltsSnap := appData.Volts
+	portStr := appData.PortStr
+	controlOn := appData.ControlOn
+	savingOn := appData.SavingOn
+	saveFile := appData.SaveFile
+	ctrlType := appData.ControlType
+	sampleTime := appData.SampleTime
+	curStep := appData.StepCtrl.CurrentStepNo
 	var controlNo int
 	if curStep >= 0 && curStep < 1024 {
-		controlNo = appData.stepCtrl.ControlNo[curStep]
+		controlNo = appData.StepCtrl.ControlNo[curStep]
 	}
-	cyclicNo := appData.stepCtrl.CyclicNo
-	appData.mu.RUnlock()
+	cyclicNo := appData.StepCtrl.CyclicNo
+	appData.RUnlock()
 
 	// Sync combobox selections back to Go strings (Textvariable is one-way in tk9.0)
 	if comboCtrlType != nil {
 		if s := tkeval.EvalErr(fmt.Sprintf("%s get", comboCtrlType.Window)); s != "" {
-			appData.mu.Lock()
-			appData.controlType = s
-			appData.mu.Unlock()
+			appData.Lock()
+			appData.ControlType = s
+			appData.Unlock()
 		}
 	}
 	if comboSampTime != nil {
 		if s := tkeval.EvalErr(fmt.Sprintf("%s get", comboSampTime.Window)); s != "" {
-			appData.mu.Lock()
-			appData.sampleTime = s
-			appData.mu.Unlock()
+			appData.Lock()
+			appData.SampleTime = s
+			appData.Unlock()
 		}
 	}
 
@@ -1104,13 +976,13 @@ func updateUI() {
 	// need to update the dedicated labels here.
 
 	if savingOn {
-		appData.mu.Lock()
-		appData.saveElapsed += 100 * time.Millisecond
-		appData.mu.Unlock()
+		appData.Lock()
+		appData.SaveElapsed += 100 * time.Millisecond
+		appData.Unlock()
 	}
-	appData.mu.RLock()
-	elSec := appData.saveElapsed.Seconds()
-	appData.mu.RUnlock()
+	appData.RLock()
+	elSec := appData.SaveElapsed.Seconds()
+	appData.RUnlock()
 	// Elapsed is shown via the "Save: Filename" row (saveElapsedLbl).
 	if saveElapsedLbl != nil {
 		saveElapsedLbl.Configure(Txt(fmt.Sprintf("%.1f [sec]", elSec)))
@@ -1165,7 +1037,7 @@ func updateUI() {
 	}
 
 	// Push to charts - based on Target (Raw/Phy/Par) and Y-axis selection
-	plotA.push(physSnap[0])  // chart A: physical CH00 (load)
+	plotA.push(physSnap[0])   // chart A: physical CH00 (load)
 	plotB.push(paramsSnap[4]) // chart B: axial strain
 }
 
@@ -1179,17 +1051,17 @@ func modbusWorker() {
 	port, portName := findPort()
 	sim := port == nil
 	if sim {
-		appData.mu.Lock()
-		appData.simMode = true
-		appData.portStr = "SIM"
-		appData.mu.Unlock()
+		appData.Lock()
+		appData.SimMode = true
+		appData.PortStr = "SIM"
+		appData.Unlock()
 		appendLog("[worker] no usable port - simulation mode")
 	} else {
 		defer port.Close()
-		appData.mu.Lock()
-		appData.simMode = false
-		appData.portStr = portName
-		appData.mu.Unlock()
+		appData.Lock()
+		appData.SimMode = false
+		appData.PortStr = portName
+		appData.Unlock()
 	}
 
 	t0 := time.Now()
@@ -1204,7 +1076,7 @@ func modbusWorker() {
 		// port.  A write failure does NOT count against consecutiveErrors
 		// (that's a read-side concern only) - we just log and let the user
 		// click "Output" again.
-		if regs, ok := consumeAOOutWrite(); ok {
+		if regs, ok := dialogs.ConsumeAOOutWrite(); ok {
 			if sim {
 				appendLog(fmt.Sprintf("[dac-sim] would write %d AO registers @ 0x%04x: %v", len(regs), modbusAOBaseAddr, regs))
 			} else {
@@ -1225,11 +1097,11 @@ func modbusWorker() {
 			}
 			phys := computePhys(raw)
 
-			appData.mu.Lock()
-			appData.raw = raw
-			appData.phys = phys
-			appData.params = computeParams()
-			appData.mu.Unlock()
+			appData.Lock()
+			appData.Raw = raw
+			appData.Phys = phys
+			appData.Params = computeParams()
+			appData.Unlock()
 
 			tick++
 			if tick == 10 {
@@ -1254,19 +1126,19 @@ func modbusWorker() {
 					port = nil
 					sim = true
 					consecutiveErrors = 0
-					appData.mu.Lock()
-					appData.simMode = true
-					appData.portStr = "SIM (err)"
-					appData.mu.Unlock()
+					appData.Lock()
+					appData.SimMode = true
+					appData.PortStr = "SIM (err)"
+					appData.Unlock()
 					continue
 				}
 				port = newPort
 				portName = newName
 				consecutiveErrors = 0
-				appData.mu.Lock()
-				appData.simMode = false
-				appData.portStr = portName
-				appData.mu.Unlock()
+				appData.Lock()
+				appData.SimMode = false
+				appData.PortStr = portName
+				appData.Unlock()
 				continue
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -1275,11 +1147,11 @@ func modbusWorker() {
 		consecutiveErrors = 0
 		phys := computePhys(raw)
 
-		appData.mu.Lock()
-		appData.raw = raw
-		appData.phys = phys
-		appData.params = computeParams()
-		appData.mu.Unlock()
+		appData.Lock()
+		appData.Raw = raw
+		appData.Phys = phys
+		appData.Params = computeParams()
+		appData.Unlock()
 
 		tick++
 		if tick%50 == 0 {
@@ -1298,8 +1170,8 @@ func modbusWorker() {
 //	if q < target + ext_err  → compress (DOWN) saturated | linear ramp
 //	else                     → stop in deadzone
 //
-// The computed speed and direction are written to appData.motorSpeed /
-// motorDir for the (future) FC16 DA board write and for the updateUI ticker.
+// The computed speed and direction are written to appData.MotorSpeed /
+// MotorDir for the (future) FC16 DA board write and for the updateUI ticker.
 // Logs to spdlog only on state transitions.
 func controlLoop() {
 	const (
@@ -1314,20 +1186,20 @@ func controlLoop() {
 		time.Sleep(100 * time.Millisecond)
 
 		// Snapshot control flags + type under one RLock.
-		appData.mu.RLock()
-		on := appData.controlOn
-		cType := appData.controlType
-		appData.mu.RUnlock()
+		appData.RLock()
+		on := appData.ControlOn
+		cType := appData.ControlType
+		appData.RUnlock()
 
 		if !on {
 			// Control is off: ensure motor is zeroed (idempotent w.r.t. the
 			// onStopControl write - just re-asserts in case anything else
 			// flipped the flag).
-			appData.mu.Lock()
-			prevSpeed, prevDir := appData.motorSpeed, appData.motorDir
-			appData.motorSpeed = 0
-			appData.motorDir = 0
-			appData.mu.Unlock()
+			appData.Lock()
+			prevSpeed, prevDir := appData.MotorSpeed, appData.MotorDir
+			appData.MotorSpeed = 0
+			appData.MotorDir = 0
+			appData.Unlock()
 			if prevSpeed != 0 || prevDir != 0 {
 				appendLog(fmt.Sprintf("[control] motor stopped (was speed=%g dir=%g)", prevSpeed, prevDir))
 				lastSpeed, lastDir = 0, 0
@@ -1339,11 +1211,11 @@ func controlLoop() {
 			// Control is on but a different algorithm is selected.  Don't
 			// run PreCon; just make sure no motor is being driven and log
 			// the transition once.
-			appData.mu.Lock()
-			prevSpeed, prevDir := appData.motorSpeed, appData.motorDir
-			appData.motorSpeed = 0
-			appData.motorDir = 0
-			appData.mu.Unlock()
+			appData.Lock()
+			prevSpeed, prevDir := appData.MotorSpeed, appData.MotorDir
+			appData.MotorSpeed = 0
+			appData.MotorDir = 0
+			appData.Unlock()
 			if prevSpeed != 0 || prevDir != 0 {
 				appendLog(fmt.Sprintf("[control] %s selected: motor stopped (was speed=%g dir=%g)", cType, prevSpeed, prevDir))
 				lastSpeed, lastDir = 0, 0
@@ -1354,12 +1226,12 @@ func controlLoop() {
 		}
 
 		// PreCon: snapshot all needed state under one RLock.
-		appData.mu.RLock()
-		pc := appData.preCon
-		q := appData.params[0]
-		comErr := appData.envVars.Values[8]
-		extErr := appData.envVars.Values[9]
-		appData.mu.RUnlock()
+		appData.RLock()
+		pc := appData.PreCon
+		q := appData.Params[0]
+		comErr := appData.EnvVars.Values[8]
+		extErr := appData.EnvVars.Values[9]
+		appData.RUnlock()
 
 		target := pc.TargetQ
 		qErr := pc.QError
@@ -1398,10 +1270,10 @@ func controlLoop() {
 		}
 
 		// Publish to appData.
-		appData.mu.Lock()
-		appData.motorSpeed = speed
-		appData.motorDir = dir
-		appData.mu.Unlock()
+		appData.Lock()
+		appData.MotorSpeed = speed
+		appData.MotorDir = dir
+		appData.Unlock()
 
 		// Log on transitions only.
 		if speed != lastSpeed || dir != lastDir {
@@ -1419,9 +1291,9 @@ func controlLoop() {
 // `CDigitShowModbusDoc::AioCalculatePhysical` exactly so a calibration JSON
 // from the C++ side works without rescaling.
 func computePhys(raw [16]int16) [16]float64 {
-	appData.mu.RLock()
-	cal := appData.cal
-	appData.mu.RUnlock()
+	appData.RLock()
+	cal := appData.Cal
+	appData.RUnlock()
 
 	var phys [16]float64
 	for i, r := range raw {
@@ -1452,8 +1324,8 @@ func computePhys(raw [16]int16) [16]float64 {
 // the write lock held by modbusWorker() and deadlocked the program.  We now
 // rely on the caller's lock and run with whatever mode it holds.
 func computeParams() [32]float64 {
-	phys := appData.phys
-	present := appData.specimen.Present
+	phys := appData.Phys
+	present := appData.Specimen.Present
 
 	var p [32]float64
 
@@ -1470,8 +1342,8 @@ func computeParams() [32]float64 {
 	}
 
 	// Current specimen geometry (C++ lines 183-186).
-	currentHeight := present.Height - phys[1]   // LVDT
-	currentVolume := present.Volume - phys[9]   // LCDPT
+	currentHeight := present.Height - phys[1] // LVDT
+	currentVolume := present.Volume - phys[9] // LCDPT
 	currentArea := safeDiv(currentVolume, currentHeight)
 	var currentDiameter float64
 	if currentArea > 0 {
@@ -1481,7 +1353,7 @@ func computeParams() [32]float64 {
 	// Stress state (C++ lines 194-197).  VLC is in N, area in mm^2, so
 	// N/mm^2 = MPa; multiply by 1000 to get kPa.
 	q := safeDiv(phys[0], currentArea) * 1000.0
-	eSr := phys[8]                                    // HCDPT already kPa
+	eSr := phys[8] // HCDPT already kPa
 	eSa := eSr + q
 	eP := (eSa + 2*eSr) / 3.0
 
@@ -1506,7 +1378,7 @@ func computeParams() [32]float64 {
 	ldt2 := present.LDT2 - phys[3]
 	var eLDT, eLDT1, eLDT2 float64
 	if present.LDT1 > 0 && present.LDT2 > 0 {
-		eLDT = ((phys[2]/present.LDT1) + (phys[3]/present.LDT2)) * 0.5 * 100.0
+		eLDT = ((phys[2] / present.LDT1) + (phys[3] / present.LDT2)) * 0.5 * 100.0
 		eLDT1 = phys[2] / present.LDT1 * 100.0
 		eLDT2 = phys[3] / present.LDT2 * 100.0
 	}
@@ -1601,9 +1473,9 @@ func containsString(s []string, v string) bool {
 
 // ─── Modbus RTU FC04 read ─────────────────────────────────────────────────────
 const (
-	modbusSlaveID  = 1
-	modbusStart    = 0
-	modbusCount    = 16
+	modbusSlaveID = 1
+	modbusStart   = 0
+	modbusCount   = 16
 	// modbusAOBaseAddr is the AO board's base register address.
 	// DigitShowModbus writes all 8 AO channels starting at 0x00 using
 	// `modbus_write_registers(ctx->Modbus.device, 0x00, ao_channel_limit, ...)`
@@ -1612,30 +1484,9 @@ const (
 	modbusAOBaseAddr uint16 = 0x0000
 )
 
-// queueAOOutWrite enqueues the given 8 AO register values for the modbus
-// worker to write at the next loop iteration.  If a previous request is
-// still pending, it is silently overwritten - the worker always sees the
-// most recent values.
-func queueAOOutWrite(regs [8]uint16) {
-	aoWriteState.Lock()
-	aoWriteState.pending = regs
-	aoWriteState.dirty = true
-	aoWriteState.Unlock()
-}
-
-// consumeAOOutWrite returns the most recently queued AO register values
-// (and true) if a write is pending, or a zero array (and false) otherwise.
-// The pending flag is cleared atomically so the next call returns false
-// until queueAOOutWrite is called again.
-func consumeAOOutWrite() (regs [8]uint16, ok bool) {
-	aoWriteState.Lock()
-	defer aoWriteState.Unlock()
-	if !aoWriteState.dirty {
-		return [8]uint16{}, false
-	}
-	aoWriteState.dirty = false
-	return aoWriteState.pending, true
-}
+// AO 書き込みキュー本体は dialogs パッケージ側 (QueueAOOutWrite /
+// ConsumeAOOutWrite) に移した。main の modbusWorker は Consume を呼び、
+// dialogs 側の voltage_out ハンドラが Queue を呼び出す。
 
 func readModbus(port serial.Port) ([16]int16, error) {
 	req := [8]byte{modbusSlaveID, 0x04, 0, modbusStart, 0, modbusCount}
@@ -1779,16 +1630,26 @@ func crc16(data []byte) uint16 {
 // is present from the start, matching the C++ side's behaviour where
 // config.yaml is created on first run.
 func saveEnvVarsIfMissing() {
-	path := configPath("envvars.json")
-	if _, err := os.Stat(path); err == nil {
-		return
-	}
-	appData.mu.RLock()
-	env := appData.envVars
-	appData.mu.RUnlock()
-	if err := saveJSON("envvars.json", envVarsFile{Env: env}); err != nil {
+	if err := seedEnvVarsJSONIfMissing(&appData, appendLog); err != nil {
 		appendLog("[env] seed envvars.json failed: " + err.Error())
-		return
 	}
-	appendLog("[env] seeded envvars.json with default values")
+}
+
+// seedEnvVarsJSONIfMissing は envvars.json が存在しなければ appData.EnvVars
+// の内容を書き出す。ロジック自体は dialogs パッケージに依存したくないので
+// ここでローカルに実装する（path は dialogs.ConfigPath を経由）。
+func seedEnvVarsJSONIfMissing(d *dialogs.AppData, log func(string)) error {
+	path := dialogs.ConfigPath("envvars.json")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	d.RLock()
+	env := d.EnvVars
+	d.RUnlock()
+	if err := dialogs.SaveJSON("envvars.json", dialogs.EnvVarsFile{Env: env}); err != nil {
+		log("[env] seed envvars.json failed: " + err.Error())
+		return err
+	}
+	log("[env] seeded envvars.json with default values")
+	return nil
 }
